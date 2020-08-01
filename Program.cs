@@ -75,6 +75,7 @@ namespace IngameScript
         private bool _initialized;
         private IMyCockpit _cockpit;
         private List<IMyThrust> _thrusters;
+        private List<ScanningCamera> _forwardCameras;
         private IMyTextSurface _maybeLcd;
 
         private bool _controlling;
@@ -440,6 +441,46 @@ namespace IngameScript
                 ResetLcd();
             }
 
+            List<IMyCameraBlock> cameraList = new List<IMyCameraBlock>();
+            group.GetBlocksOfType(cameraList);
+            _forwardCameras = new List<ScanningCamera>(cameraList.Count);
+
+            foreach (IMyCameraBlock cam in cameraList)
+            {
+                if (cam.Orientation.Forward == _cockpit.Orientation.Forward)
+                {
+                    ScanningCamera sc = new ScanningCamera();
+                    cam.Enabled = true;
+                    cam.EnableRaycast = true;
+                    sc._cameraBlock = cam;
+
+                    Base6Directions.Direction camUp = cam.Orientation.Up;
+                    CameraRotation rotation;
+                    if (camUp == _cockpit.Orientation.Up) rotation = CameraRotation.NORMAL;
+                    else if (camUp == Base6Directions.GetOppositeDirection(_cockpit.Orientation.Left)) rotation = CameraRotation.CLOCKWISE;
+                    else if (camUp == _cockpit.Orientation.Left) rotation = CameraRotation.COUNTERCLOCKWISE;
+                    else rotation = CameraRotation.UPSIDEDOWN;
+                    sc._rotation = rotation;
+
+                    _forwardCameras.Add(sc);
+                }
+            }
+
+            if (_forwardCameras.Count > 0)
+            {
+                ScanningCamera sc = _forwardCameras[0];
+                float raycastPitch = 0f;
+                float raycastYaw = 30f;
+                sc.TransformRotation(ref raycastPitch, ref raycastYaw);
+
+                MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(30.0, raycastPitch, raycastYaw);
+                Echo("Raycast result: " + raycast.Name);
+            }
+            else
+            {
+                Echo("No forward-facing cameras found");
+            }
+
             return true;
         }
 
@@ -471,6 +512,50 @@ namespace IngameScript
         {
             _maybeLcd.BackgroundColor = Color.Black;
             _maybeLcd.WriteText("");
+        }
+
+        new void Echo(object obj)
+        {
+            base.Echo(obj != null ? obj.ToString() : "null");
+        }
+
+        class ScanningCamera
+        {
+            // The camera block this scanning camera uses
+            public IMyCameraBlock _cameraBlock;
+
+            // The rotation of this camera relative to the cockpit, from the perspective of looking forward in the cockpit
+            public CameraRotation _rotation;
+
+            public void TransformRotation(ref float pitch, ref float yaw)
+            {
+                float oldPitch = pitch;
+                switch (_rotation)
+                {
+                    case CameraRotation.NORMAL:
+                        break;
+                    case CameraRotation.CLOCKWISE:
+                        pitch = yaw;
+                        yaw = -oldPitch;
+                        break;
+                    case CameraRotation.UPSIDEDOWN:
+                        pitch = -pitch;
+                        yaw = -yaw;
+                        break;
+                    case CameraRotation.COUNTERCLOCKWISE:
+                        pitch = -yaw;
+                        yaw = oldPitch;
+                        break;
+                }
+            }
+        }
+
+        enum CameraRotation
+        {
+            NORMAL,
+            CLOCKWISE,
+            UPSIDEDOWN,
+            COUNTERCLOCKWISE
         }
     }
 }
