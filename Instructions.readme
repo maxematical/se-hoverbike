@@ -1,0 +1,58 @@
+﻿maaax's Hoverbike Script v1.0
+
+
+Setup instructions:
+
+1) Make a block group called "Hoverbike". The group should contain the cockpit/remote control, the thrusters to be controlled by
+   this script, and optionally an LCD panel to display onto.
+
+2) Initialize the script by running it with the argument "Init".
+
+3) Now, you can run the script with the argument "Auto" to start the hoverbike, "Stop" to stop the script, or "Land" to slowly land.
+
+4) (Optional) change the block group that the script uses by running the argument "BlockGroup <Group Name>".
+
+
+Flight instructions:
+
+ - You control the hoverbike only by rotating the ship. To go forward, pitch down. To go backwards, pitch up. To turn, roll by
+   pressing Q and E.
+
+ - The hoverbike usually can detect smaller hills and bumps, but you can still press Space or C in emergency situations to thrust
+   up or down, respectively.
+
+ - If you have an LCD, the first number on the screen is your forward speed. The second number your speed to the right. (If you're
+   going to the left, that number will be negative.)
+
+
+All arguments to script (capitalization doesn't matter):
+
+ - Init: sets up the script for the first time. You should also run this after changing the blocks in the block group.
+ - Auto: turns on the script and starts hovering.
+ - Stop: turns off the script and goes back to regular space engineers controls
+ - Land: slowly lowers the ship to the ground. Recommended to only use this if you are already going fairly slow!
+ - BlockGroup: shows the name of the block group that the script is using.
+ - BlockGroup <GroupName>: sets the block group that the script is using to the given value.
+
+
+Copyright 2020 maaaxaltan
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to 
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
