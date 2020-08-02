@@ -62,28 +62,42 @@ namespace IngameScript
         // few meters. This value means how many meters the script should wait before checking the height of the ground again.
         // Default value: 5.0
         private const double GROUND_HEIGHT_SAMPLE_RATE = 5.0;
+
+        private const double GROUND_RAYCAST_INTERVAL = 0.25;
+
+        private const double MAX_DOWNWARDS_RAYCAST = 150.0;
         
         // ==========================================================================
         // Don't change anything below this line (unless you want to edit the script)
         // ==========================================================================
 
-        private const string VERSION = "1.0";
+        private const string VERSION = "1.1_dev";
         private const string DEFAULT_BLOCK_GROUP = "Hoverbike";
 
         private string _blockGroupName;
 
+        // Blocks and stuff needed for the script, set up in the Init() function
         private bool _initialized;
         private IMyCockpit _cockpit;
         private List<IMyThrust> _thrusters;
         private List<ScanningCamera> _forwardCameras;
+        private ScanningCamera _maybeBottomCamera;
         private IMyTextSurface _maybeLcd;
 
+        // Control variables
         private bool _controlling;
         private bool _landing;
 
-        private double _slope;
+        // Variables related to obtaining ground height through raycasting
+        private double _lastRaycastAltitude;
+        private double _lastRaycastAltitudeTime = double.MinValue;
+
+        // Variables related to obtaining ground height through checking altitude & sea level
         private Vector3 _lastSeaLevelPos;
         private double _lastGroundHeight;
+
+        // Computed slope of the ground
+        private double _slope;
 
         private double _totalTimeRan;
 
@@ -199,6 +213,18 @@ namespace IngameScript
             // Determine axes relative to the ship, but also parallel to the ground
             Vector3 groundForward = Vector3.Cross(shipRight, gravityDown);
             Vector3 groundRight = Vector3.Cross(gravityDown, groundForward);
+            groundForward.Normalize();
+            groundRight.Normalize();
+
+            // Calculate ship roll and pitch
+            // Normally, we would be using acos(dot(x, y)), but since Vector3.Dot returns a float and Math.Acos takes a double, the dot value is
+            // automatically casted from a float to a double, which can sometimes result in 1f getting cast to 1.00001 due to precision errors,
+            // which causes acos to return NaN. Therefore we need to clamp the dot value after we cast it to avoid such errors from causing NaN.
+            double shipRollDot = Clamp(0.0, 1.0, (double) Vector3.Dot(groundRight, shipRight));
+            double shipPitchDot = Clamp(0.0, 1.0, (double) Vector3.Dot(groundForward, shipForward));
+
+            float shipRoll = ToDeg((float) Math.Acos(shipRollDot)) * Math.Sign(Vector3.Dot(gravityDown, shipRight));
+            float shipPitch = ToDeg((float) Math.Acos(shipPitchDot)) * -Math.Sign(Vector3.Dot(gravityDown, shipForward));
 
             // Determine maximum acceleration that can be provided by the thrusters
             float thrustAlignment = Vector3.Dot(shipDown, gravityDown);
@@ -213,19 +239,19 @@ namespace IngameScript
             }
 
             // Determine current altitude
-            double altitude;
-            if (!_cockpit.TryGetPlanetElevation(MyPlanetElevation.Surface, out altitude))
+            double? maybeAltitude = CheckAltitude(gravityDown, shipDown);
+            if (maybeAltitude == null)
             {
-                Echo("Not in gravity well");
+                Echo("Couldn't compute altitude " + _totalTimeRan.ToString("F1"));
                 ResetThrusters();
                 return;
             }
+            double altitude = maybeAltitude.Value;
 
-            // Determine current distance above sea level (this is needed to measure the slope of the ground)
+            // Check the ground height by comparing our current altitude to sea level
             double distanceAboveSl;
             _cockpit.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out distanceAboveSl);
             double groundHeight = distanceAboveSl - altitude;
-            Vector3D seaLevelPosition = _cockpit.GetPosition() - gravityDown * (float)distanceAboveSl;
 
             // Determine components of velocity relative to various axes
             float verticalVelocity = Vector3.Dot(velocity, -gravityDown);
@@ -233,7 +259,8 @@ namespace IngameScript
             float forwardVelocity = Vector3.Dot(velocity, groundForward);
             float sidewaysVelocity = Vector3.Dot(velocity, groundRight);
 
-            // Measure the slope of the ground by seeing how fast distance above sea level is changing
+            // Measure the slope of the ground by seeing how fast ground height is changing
+            Vector3D seaLevelPosition = _cockpit.GetPosition() - gravityDown * (float) distanceAboveSl;
             if (Vector3.DistanceSquared(seaLevelPosition, _lastSeaLevelPos) >= (GROUND_HEIGHT_SAMPLE_RATE * GROUND_HEIGHT_SAMPLE_RATE))
             {
                 _slope = (groundHeight - _lastGroundHeight) / Vector3.Distance(seaLevelPosition, _lastSeaLevelPos);
@@ -364,18 +391,63 @@ namespace IngameScript
                 _maybeLcd.FontSize = 5.0f;
                 _maybeLcd.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
+                //bool dangerousCamera = _maybeBottomCamera != null && _maybeBottomCamera._cameraBlock;
+
+                float maxAngle = _maybeBottomCamera?._cameraBlock?.RaycastConeLimit ?? float.MaxValue;
+                bool isOverMaxAngle = Math.Abs(shipPitch) >= maxAngle || Math.Abs(shipRoll) >= maxAngle;
+                bool isNearMaxAngle = Math.Abs(shipPitch) >= (maxAngle - 10) || Math.Abs(shipRoll) >= (maxAngle - 10);
+
                 // Determine background color of LCD panel
                 // If we are user controlled, flash purple
                 if (isUserControlled) _maybeLcd.BackgroundColor = (_totalTimeRan % 0.15 < 0.075) ? new Color(25, 0, 60) : new Color(30, 0, 50);
                 // If maximum acceleration is too low, warn the user and set the background to yellow or red
-                else if (maxAccel < 2f) _maybeLcd.BackgroundColor = new Color(75, 0, 0);
-                else if (maxAccel < 4f) _maybeLcd.BackgroundColor = new Color(40, 25, 0);
+                else if (maxAccel < 2f || isOverMaxAngle) _maybeLcd.BackgroundColor = new Color(75, 0, 0);
+                else if (maxAccel < 4f || isNearMaxAngle) _maybeLcd.BackgroundColor = new Color(40, 25, 0);
                 // If we are going right too fast, set background to blue
                 else if (sidewaysVelocity > 2f) _maybeLcd.BackgroundColor = new Color(0, 0, (int) Math.Min(100, sidewaysVelocity * 10f));
                 // If we are going left too fast, set background to green
                 else if (sidewaysVelocity < -2f) _maybeLcd.BackgroundColor = new Color(0, (int) Math.Min(100, -sidewaysVelocity * 10f), 0);
                 // Otherwise, set background to black (transparent)
                 else _maybeLcd.BackgroundColor = Color.Black;
+            }
+        }
+
+        double? CheckAltitude(Vector3 gravDown, Vector3 shipDown)
+        {
+            if (_maybeBottomCamera == null)
+            {
+                // Check altitude by using default cockpit altitude
+                double altitude;
+                if (_cockpit.TryGetPlanetElevation(MyPlanetElevation.Surface, out altitude))
+                    return altitude;
+                else
+                    return null;
+            }
+            else
+            {
+                // Check altitude using camera raycast
+                double timeSinceLastRaycast = _totalTimeRan - _lastRaycastAltitudeTime;
+                
+                // Check if we haven't raycasted recently, if so, do another raycast
+                double rayDistLimit = _maybeBottomCamera._cameraBlock.RaycastDistanceLimit;
+                if (timeSinceLastRaycast >= GROUND_RAYCAST_INTERVAL && (rayDistLimit >= MAX_DOWNWARDS_RAYCAST || rayDistLimit < 0))
+                {
+                    // Do the raycast!
+                    MyDetectedEntityInfo raycast = _maybeBottomCamera._cameraBlock.Raycast(_maybeBottomCamera._cameraBlock.GetPosition() + gravDown * (float)MAX_DOWNWARDS_RAYCAST);
+                    if (raycast.Type != MyDetectedEntityType.None && !raycast.IsEmpty())
+                    {
+                        _lastRaycastAltitude = Vector3.Distance(_maybeBottomCamera._cameraBlock.GetPosition(), raycast.HitPosition.Value);
+                        _lastRaycastAltitudeTime = _totalTimeRan;
+                    }
+                }
+
+                float cameraVerticalDistanceFromCockpit = Vector3.Dot(-shipDown, _maybeBottomCamera._cameraBlock.GetPosition() - _cockpit.GetPosition());
+
+                // If we have recently raycasted, return that result, otherwise the stored result is too old to use, so just return null
+                if (timeSinceLastRaycast <= 2 * GROUND_RAYCAST_INTERVAL)
+                    return _lastRaycastAltitude - cameraVerticalDistanceFromCockpit;
+                else
+                    return null;
             }
         }
 
@@ -427,6 +499,7 @@ namespace IngameScript
 
             List<IMyTextPanel> lcdList = new List<IMyTextPanel>();
             group.GetBlocksOfType(lcdList);
+            _maybeLcd = null;
             if (lcdList.Count > 0)
             {
                 _maybeLcd = lcdList[0];
@@ -444,6 +517,7 @@ namespace IngameScript
             List<IMyCameraBlock> cameraList = new List<IMyCameraBlock>();
             group.GetBlocksOfType(cameraList);
             _forwardCameras = new List<ScanningCamera>(cameraList.Count);
+            _maybeBottomCamera = null;
 
             foreach (IMyCameraBlock cam in cameraList)
             {
@@ -464,6 +538,23 @@ namespace IngameScript
 
                     _forwardCameras.Add(sc);
                 }
+                if (cam.Orientation.Forward == Base6Directions.GetOppositeDirection(_cockpit.Orientation.Up))
+                {
+                    ScanningCamera sc = new ScanningCamera();
+                    cam.Enabled = true;
+                    cam.EnableRaycast = true;
+                    sc._cameraBlock = cam;
+
+                    Base6Directions.Direction camUp = cam.Orientation.Up;
+                    CameraRotation rotation;
+                    if (camUp == _cockpit.Orientation.Forward) rotation = CameraRotation.NORMAL;
+                    else if (camUp == Base6Directions.GetOppositeDirection(_cockpit.Orientation.Left)) rotation = CameraRotation.CLOCKWISE;
+                    else if (camUp == _cockpit.Orientation.Left) rotation = CameraRotation.COUNTERCLOCKWISE;
+                    else rotation = CameraRotation.UPSIDEDOWN;
+                    sc._rotation = rotation;
+
+                    _maybeBottomCamera = sc;
+                }
             }
 
             if (_forwardCameras.Count > 0)
@@ -475,10 +566,6 @@ namespace IngameScript
 
                 MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(30.0, raycastPitch, raycastYaw);
                 Echo("Raycast result: " + raycast.Name);
-            }
-            else
-            {
-                Echo("No forward-facing cameras found");
             }
 
             return true;
@@ -514,10 +601,19 @@ namespace IngameScript
             _maybeLcd.WriteText("");
         }
 
+        float ToDeg(float rad) => rad * 57.2957795131f;
+
+        float ToRad(float deg) => deg / 57.2957795131f;
+
+        double Clamp(double a, double b, double x) => Math.Max(a, Math.Min(b, x));
+
         new void Echo(object obj)
         {
             base.Echo(obj != null ? obj.ToString() : "null");
         }
+
+        string FormatGPS(Vector3 position, string gpsName) =>
+            $"GPS:{gpsName}:{position.X.ToString("F5")}:{position.Y.ToString("F5")}:{position.Z.ToString("F5")}:";
 
         class ScanningCamera
         {
