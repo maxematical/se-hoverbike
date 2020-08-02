@@ -63,8 +63,17 @@ namespace IngameScript
         // Default value: 5.0
         private const double GROUND_HEIGHT_SAMPLE_RATE = 5.0;
 
-        private const double GROUND_RAYCAST_INTERVAL = 0.25;
+        // If the ship has bottom-facing cameras, the script will perform use these cameras to perform a raycast (scan) several
+        // times every second to check the height of the ground. This is the interval, in seconds, between each raycast. A
+        // smaller interval will result in more raycasts, which means more accurate height measurements, but makes the script
+        // more processing-heavy and could cause lag. (Note: the interval at which cameras can raycast may also be limited by
+        // the server's settings)
+        // Default value: 0.125
+        private const double GROUND_RAYCAST_INTERVAL = 0.125;
 
+        // The maximum distance, in meters, that downwards-facing cameras will raycast when trying to determine the height of the
+        // ground. See GROUND_RAYCAST_INTERVAL for more info.
+        // Default value: 150.0
         private const double MAX_DOWNWARDS_RAYCAST = 150.0;
         
         // ==========================================================================
@@ -81,16 +90,13 @@ namespace IngameScript
         private IMyCockpit _cockpit;
         private List<IMyThrust> _thrusters;
         private List<ScanningCamera> _forwardCameras;
-        private ScanningCamera _maybeBottomCamera;
+        private List<ScanningCamera> _bottomCameras;
+        private float _bottomCamerasMaxAngle;
         private IMyTextSurface _maybeLcd;
 
         // Control variables
         private bool _controlling;
         private bool _landing;
-
-        // Variables related to obtaining ground height through raycasting
-        private double _lastRaycastAltitude;
-        private double _lastRaycastAltitudeTime = double.MinValue;
 
         // Variables related to obtaining ground height through checking altitude & sea level
         private Vector3 _lastSeaLevelPos;
@@ -391,9 +397,7 @@ namespace IngameScript
                 _maybeLcd.FontSize = 5.0f;
                 _maybeLcd.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
-                //bool dangerousCamera = _maybeBottomCamera != null && _maybeBottomCamera._cameraBlock;
-
-                float maxAngle = _maybeBottomCamera?._cameraBlock?.RaycastConeLimit ?? float.MaxValue;
+                float maxAngle = _bottomCamerasMaxAngle;
                 bool isOverMaxAngle = Math.Abs(shipPitch) >= maxAngle || Math.Abs(shipRoll) >= maxAngle;
                 bool isNearMaxAngle = Math.Abs(shipPitch) >= (maxAngle - 10) || Math.Abs(shipRoll) >= (maxAngle - 10);
 
@@ -414,7 +418,33 @@ namespace IngameScript
 
         double? CheckAltitude(Vector3 gravDown, Vector3 shipDown)
         {
-            if (_maybeBottomCamera == null)
+            // Ideally, check altitude using camera raycast
+            // Count the number of cameras with a valid raycast result
+            int numRaycastedCameras = 0;
+
+            // Go through each bottom camera and check if we haven't raycasted recently; if so, do another raycast
+            foreach (ScanningCamera sc in _bottomCameras)
+            {
+                double timeSinceLastRaycast = _totalTimeRan - sc._lastRaycastTime;
+                double rayDistLimit = sc._cameraBlock.RaycastDistanceLimit;
+                if (timeSinceLastRaycast >= GROUND_RAYCAST_INTERVAL && (rayDistLimit >= MAX_DOWNWARDS_RAYCAST || rayDistLimit < 0))
+                {
+                    // Do the raycast!
+                    MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(sc._cameraBlock.GetPosition() + gravDown * (float) MAX_DOWNWARDS_RAYCAST);
+                    if (raycast.Type != MyDetectedEntityType.None && !raycast.IsEmpty())
+                    {
+                        float verticalDistFromCockpit = Vector3.Dot(-shipDown, sc._cameraBlock.GetPosition() - _cockpit.GetPosition());
+                        sc._lastRaycastResult = Vector3.Distance(sc._cameraBlock.GetPosition(), raycast.HitPosition.Value) - verticalDistFromCockpit;
+                        sc._lastRaycastTime = _totalTimeRan;
+                    }
+                }
+
+                if (sc._lastRaycastResult != null) numRaycastedCameras++;
+            }
+
+            // If there aren't any cameras with raycast yet (or no cameras at all), fall back to using cockpit altitude
+            // (This will detect terrain but not blocks or other ships under the hoverbike)
+            if (numRaycastedCameras == 0)
             {
                 // Check altitude by using default cockpit altitude
                 double altitude;
@@ -423,32 +453,15 @@ namespace IngameScript
                 else
                     return null;
             }
-            else
+
+            // Return the least of the most recent raycasts
+            double leastAltitude = double.MaxValue;
+            foreach (ScanningCamera sc in _bottomCameras)
             {
-                // Check altitude using camera raycast
-                double timeSinceLastRaycast = _totalTimeRan - _lastRaycastAltitudeTime;
-                
-                // Check if we haven't raycasted recently, if so, do another raycast
-                double rayDistLimit = _maybeBottomCamera._cameraBlock.RaycastDistanceLimit;
-                if (timeSinceLastRaycast >= GROUND_RAYCAST_INTERVAL && (rayDistLimit >= MAX_DOWNWARDS_RAYCAST || rayDistLimit < 0))
-                {
-                    // Do the raycast!
-                    MyDetectedEntityInfo raycast = _maybeBottomCamera._cameraBlock.Raycast(_maybeBottomCamera._cameraBlock.GetPosition() + gravDown * (float)MAX_DOWNWARDS_RAYCAST);
-                    if (raycast.Type != MyDetectedEntityType.None && !raycast.IsEmpty())
-                    {
-                        _lastRaycastAltitude = Vector3.Distance(_maybeBottomCamera._cameraBlock.GetPosition(), raycast.HitPosition.Value);
-                        _lastRaycastAltitudeTime = _totalTimeRan;
-                    }
-                }
-
-                float cameraVerticalDistanceFromCockpit = Vector3.Dot(-shipDown, _maybeBottomCamera._cameraBlock.GetPosition() - _cockpit.GetPosition());
-
-                // If we have recently raycasted, return that result, otherwise the stored result is too old to use, so just return null
-                if (timeSinceLastRaycast <= 2 * GROUND_RAYCAST_INTERVAL)
-                    return _lastRaycastAltitude - cameraVerticalDistanceFromCockpit;
-                else
-                    return null;
+                if (sc._lastRaycastResult != null)
+                    leastAltitude = Math.Min(leastAltitude, sc._lastRaycastResult.Value);
             }
+            return leastAltitude;
         }
 
         void ResetThrusters()
@@ -517,10 +530,12 @@ namespace IngameScript
             List<IMyCameraBlock> cameraList = new List<IMyCameraBlock>();
             group.GetBlocksOfType(cameraList);
             _forwardCameras = new List<ScanningCamera>(cameraList.Count);
-            _maybeBottomCamera = null;
+            _bottomCameras = new List<ScanningCamera>(cameraList.Count);
+            _bottomCamerasMaxAngle = float.MaxValue;
 
             foreach (IMyCameraBlock cam in cameraList)
             {
+                // Detect forward-facing cameras
                 if (cam.Orientation.Forward == _cockpit.Orientation.Forward)
                 {
                     ScanningCamera sc = new ScanningCamera();
@@ -538,6 +553,7 @@ namespace IngameScript
 
                     _forwardCameras.Add(sc);
                 }
+                // Detect downwards-facing cameras
                 if (cam.Orientation.Forward == Base6Directions.GetOppositeDirection(_cockpit.Orientation.Up))
                 {
                     ScanningCamera sc = new ScanningCamera();
@@ -553,7 +569,8 @@ namespace IngameScript
                     else rotation = CameraRotation.UPSIDEDOWN;
                     sc._rotation = rotation;
 
-                    _maybeBottomCamera = sc;
+                    _bottomCameras.Add(sc);
+                    _bottomCamerasMaxAngle = Math.Min(_bottomCamerasMaxAngle, cam.RaycastConeLimit);
                 }
             }
 
@@ -622,6 +639,12 @@ namespace IngameScript
 
             // The rotation of this camera relative to the cockpit, from the perspective of looking forward in the cockpit
             public CameraRotation _rotation;
+
+            // The distance from the last successful (hit) raycast, or null if there hasn't been any raycasts so far
+            public double? _lastRaycastResult = null;
+
+            // The last time that this camera has raycasted (see _totalTimeRan)
+            public double _lastRaycastTime = double.MinValue;
 
             public void TransformRotation(ref float pitch, ref float yaw)
             {
