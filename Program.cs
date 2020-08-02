@@ -28,11 +28,11 @@ namespace IngameScript
 
         // The minimum altitude, in meters, this script will try to maintain. If the ship is below this altitude, it will fly up.
         // Default value: 3.5
-        private const double MIN_ALTITUDE = 3.5;
+        private const double NORMAL_MIN_ALTITUDE = 3.5;
 
         // The maximum altitude, in meters, this script will try to maintain. If the ship is above this altitude, it will fly down.
         // Default value: 7.0
-        private const double MAX_ALTITUDE = 7.0;
+        private const double NORMAL_MAX_ALTITUDE = 7.0;
 
         // The vertical speed that the script will try to maintain when landing.
         // Default value: 3.5
@@ -75,6 +75,9 @@ namespace IngameScript
         // ground. See GROUND_RAYCAST_INTERVAL for more info.
         // Default value: 150.0
         private const double MAX_DOWNWARDS_RAYCAST = 150.0;
+
+        private const double HANGAR_MODE_MIN_ALTITUDE = 2.0;
+        private const double HANGAR_MODE_MAX_ALTITUDE = 3.0;
         
         // ==========================================================================
         // Don't change anything below this line (unless you want to edit the script)
@@ -97,6 +100,7 @@ namespace IngameScript
         // Control variables
         private bool _controlling;
         private bool _landing;
+        private bool _isHangarMode;
 
         // Variables related to obtaining ground height through checking altitude & sea level
         private Vector3 _lastSeaLevelPos;
@@ -171,6 +175,7 @@ namespace IngameScript
             {
                 _controlling = true;
                 _landing = false;
+                _isHangarMode = false;
             }
             if (argument == "stop")
             {
@@ -186,8 +191,14 @@ namespace IngameScript
             }
             if (argument == "land")
             {
+                _landing = !_controlling ? true : !_landing;
                 _controlling = true;
-                _landing = true;
+            }
+            if (argument == "hangar")
+            {
+                _controlling = true;
+                _landing = false;
+                _isHangarMode = true;
             }
         }
 
@@ -245,7 +256,11 @@ namespace IngameScript
             }
 
             // Determine current altitude
-            double? maybeAltitude = CheckAltitude(gravityDown, shipDown);
+            var altitudeTuple = CheckAltitude(gravityDown, shipDown);
+            double? raycastedAltitude = altitudeTuple.a;
+            double? elevationAltitude = altitudeTuple.b;
+
+            double? maybeAltitude = raycastedAltitude ?? elevationAltitude; // prefer raycasted altitude, fall back to elevation altitude
             if (maybeAltitude == null)
             {
                 Echo("Couldn't compute altitude " + _totalTimeRan.ToString("F1"));
@@ -294,6 +309,20 @@ namespace IngameScript
                 stoppingDistance = Math.Abs(forwardVelocity * t + 0.5f * forwardAcceleration * t * t);
             }
 
+            // Determine the desired minumum/maximum altitude based on the current control settings
+            double minAltitude;
+            double maxAltitude;
+            if (_isHangarMode)
+            {
+                minAltitude = HANGAR_MODE_MIN_ALTITUDE;
+                maxAltitude = HANGAR_MODE_MAX_ALTITUDE;
+            }
+            else
+            {
+                minAltitude = NORMAL_MIN_ALTITUDE;
+                maxAltitude = NORMAL_MAX_ALTITUDE;
+            }
+
             // OK, we know everything we need to know to start doing the autopilot thingy
             // Determine desired acceleration
             float accel; // desired vertical acceleration after gravity is taken into account
@@ -317,7 +346,7 @@ namespace IngameScript
                 if (accel < minAccel) accel = minAccel;
                 if (accel > maxAccel) accel = maxAccel;
             }
-            else if (altitude < MIN_ALTITUDE)
+            else if (altitude < minAltitude)
             {
                 if (slopeVelocity > 0)
                 {
@@ -327,7 +356,7 @@ namespace IngameScript
                     double t = -slopeVelocity / minAccel;
                     double y = altitude + slopeVelocity * t + 0.5 * minAccel * t * t;
 
-                    accel = (y > MIN_ALTITUDE) ? minAccel : maxAccel;
+                    accel = (y > minAltitude) ? minAccel : maxAccel;
                 }
                 else
                 {
@@ -335,7 +364,7 @@ namespace IngameScript
                     accel = maxAccel;
                 }
             }
-            else if (altitude > MAX_ALTITUDE)
+            else if (altitude > maxAltitude)
             {
                 if (slopeVelocity < 0)
                 {
@@ -345,7 +374,7 @@ namespace IngameScript
                     double t = -slopeVelocity / maxAccel;
                     double y = altitude + slopeVelocity * t + 0.5 * maxAccel * t * t;
 
-                    accel = (y < MAX_ALTITUDE) ? maxAccel : minAccel;
+                    accel = (y < maxAltitude) ? maxAccel : minAccel;
                 }
                 else
                 {
@@ -377,29 +406,66 @@ namespace IngameScript
                 thrust.Enabled = !(_landing && altitude < LANDING_ALTITUDE_THRESHOLD);
             }
 
+            // Turn off and remove damaged thrusters
+            for (int i = _thrusters.Count - 1; i >= 0; i--)
+            {
+                if (!_thrusters[i].IsFunctional)
+                {
+                    _thrusters[i].ThrustOverride = 0f;
+                    _thrusters.RemoveAt(i);
+                    i--;
+                }
+            }
+
             // Update LCD (if any)
             if (_maybeLcd != null)
             {
                 string line1 = (Math.Abs(forwardVelocity) > 5) ? forwardVelocity.ToString("F0") : forwardVelocity.ToString("F1");
                 string line2 = (Math.Abs(sidewaysVelocity) > 5) ? sidewaysVelocity.ToString("F0") : sidewaysVelocity.ToString("F1");
                 string line3 = "";
-                if (stoppingDistance >= 0 &&
+
+                if (_landing)
+                {
+                    line3 = "LAND";
+                }
+                else if (_isHangarMode && raycastedAltitude != null)
+                {
+                    line3 = raycastedAltitude.Value.ToString("F1");
+                }
+                else if (stoppingDistance >= 0 &&
                     Math.Abs(forwardAcceleration) > DISPLAY_STOPDIST_THRESHOLD_ACCEL &&
                     Math.Abs(forwardVelocity) > DISPLAY_STOPDIST_THRESHOLD_SPEED)
                 {
                     line3 = stoppingDistance.ToString("F0");
                 }
-                if (_landing)
-                {
-                    line3 = "LAND";
-                }
+                ////Debug difference between raycasted and elevation altitude:
+                //line3 = raycastedAltitude != null && elevationAltitude != null ? (raycastedAltitude.Value - elevationAltitude.Value).ToString("F1") : "a";
 
                 _maybeLcd.FontSize = 5.0f;
                 _maybeLcd.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
-                float maxAngle = _bottomCamerasMaxAngle;
-                bool isOverMaxAngle = Math.Abs(shipPitch) >= maxAngle || Math.Abs(shipRoll) >= maxAngle;
-                bool isNearMaxAngle = Math.Abs(shipPitch) >= (maxAngle - 10) || Math.Abs(shipRoll) >= (maxAngle - 10);
+                // If we would have normally used raycasted altitude, but the ship is tilted so far that we need to use elevation
+                // altitude instead, this can result in inaccuracies (e.g. didn't detect the grid we are hovering over)
+                // Warn the user if we would normally use raycasted altitude but can't/almost can't because we are tilted too far.
+                bool isOverMaxAngle = false;
+                bool isNearMaxAngle = false;
+                if (_bottomCameras.Count > 0)
+                {
+                    float maxAngle = _bottomCamerasMaxAngle;
+                    isOverMaxAngle = Math.Abs(shipPitch) >= maxAngle || Math.Abs(shipRoll) >= maxAngle;
+                    isNearMaxAngle = Math.Abs(shipPitch) >= (maxAngle - 5) || Math.Abs(shipRoll) >= (maxAngle - 5);
+                }
+
+                // Determine text color of LCD panel
+                // If we are in hangar mode, set the color to blue, otherwise set it to white
+                if (_isHangarMode)
+                {
+                    _maybeLcd.FontColor = new Color(50, 150, 185);
+                }
+                else
+                {
+                    _maybeLcd.FontColor = new Color(255, 255, 255);
+                }
 
                 // Determine background color of LCD panel
                 // If we are user controlled, flash purple
@@ -408,19 +474,21 @@ namespace IngameScript
                 else if (maxAccel < 2f || isOverMaxAngle) _maybeLcd.BackgroundColor = new Color(75, 0, 0);
                 else if (maxAccel < 4f || isNearMaxAngle) _maybeLcd.BackgroundColor = new Color(40, 25, 0);
                 // If we are going right too fast, set background to blue
-                else if (sidewaysVelocity > 2f) _maybeLcd.BackgroundColor = new Color(0, 0, (int) Math.Min(100, sidewaysVelocity * 10f));
+                else if (sidewaysVelocity > 2f && !_isHangarMode) _maybeLcd.BackgroundColor = new Color(0, 0, (int) Math.Min(100, sidewaysVelocity * 10f));
                 // If we are going left too fast, set background to green
-                else if (sidewaysVelocity < -2f) _maybeLcd.BackgroundColor = new Color(0, (int) Math.Min(100, -sidewaysVelocity * 10f), 0);
+                else if (sidewaysVelocity < -2f && !_isHangarMode) _maybeLcd.BackgroundColor = new Color(0, (int) Math.Min(100, -sidewaysVelocity * 10f), 0);
                 // Otherwise, set background to black (transparent)
                 else _maybeLcd.BackgroundColor = Color.Black;
             }
         }
 
-        double? CheckAltitude(Vector3 gravDown, Vector3 shipDown)
+        // Checks the current altitude of the ship using both raycasts (if available) and planet elevation (if available).
+        // Returns a tuple where the first member is the raycasted altitude, and the second member is the elevation-determined altitude.
+        ValueTuple<double?, double?> CheckAltitude(Vector3 gravDown, Vector3 shipDown)
         {
             // Ideally, check altitude using camera raycast
             // Count the number of cameras with a valid raycast result
-            int numRaycastedCameras = 0;
+            int numRecentRaycastedCameras = 0;
 
             // Go through each bottom camera and check if we haven't raycasted recently; if so, do another raycast
             foreach (ScanningCamera sc in _bottomCameras)
@@ -433,35 +501,37 @@ namespace IngameScript
                     MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(sc._cameraBlock.GetPosition() + gravDown * (float) MAX_DOWNWARDS_RAYCAST);
                     if (raycast.Type != MyDetectedEntityType.None && !raycast.IsEmpty())
                     {
-                        float verticalDistFromCockpit = Vector3.Dot(-shipDown, sc._cameraBlock.GetPosition() - _cockpit.GetPosition());
+                        float verticalDistFromCockpit = Vector3.Dot(-shipDown, sc._cameraBlock.GetPosition() - _cockpit.GetPosition()) * 0.5f;
                         sc._lastRaycastResult = Vector3.Distance(sc._cameraBlock.GetPosition(), raycast.HitPosition.Value) - verticalDistFromCockpit;
                         sc._lastRaycastTime = _totalTimeRan;
                     }
                 }
 
-                if (sc._lastRaycastResult != null) numRaycastedCameras++;
+                if (sc._lastRaycastResult != null && timeSinceLastRaycast <= GROUND_RAYCAST_INTERVAL * 3) numRecentRaycastedCameras++;
             }
 
-            // If there aren't any cameras with raycast yet (or no cameras at all), fall back to using cockpit altitude
+            // Calculate the altitude using recently raycasted cameras.
+            double? raycastedAltitude = null;
+            if (numRecentRaycastedCameras > 0)
+            {
+                double leastAltitude = double.MaxValue;
+                foreach (ScanningCamera sc in _bottomCameras)
+                {
+                    if (sc._lastRaycastResult != null)
+                        leastAltitude = Math.Min(leastAltitude, sc._lastRaycastResult.Value);
+                }
+                raycastedAltitude = leastAltitude;
+            }
+
+            // Calculate the altitude using cockpit altitude
             // (This will detect terrain but not blocks or other ships under the hoverbike)
-            if (numRaycastedCameras == 0)
-            {
-                // Check altitude by using default cockpit altitude
-                double altitude;
-                if (_cockpit.TryGetPlanetElevation(MyPlanetElevation.Surface, out altitude))
-                    return altitude;
-                else
-                    return null;
-            }
+            double? elevationAltitude = null;
+            double elevationAltitude2;
+            if (_cockpit.TryGetPlanetElevation(MyPlanetElevation.Surface, out elevationAltitude2))
+                elevationAltitude = elevationAltitude2;
 
-            // Return the least of the most recent raycasts
-            double leastAltitude = double.MaxValue;
-            foreach (ScanningCamera sc in _bottomCameras)
-            {
-                if (sc._lastRaycastResult != null)
-                    leastAltitude = Math.Min(leastAltitude, sc._lastRaycastResult.Value);
-            }
-            return leastAltitude;
+            // Return the results from both altitude checks
+            return new ValueTuple<double?, double?>(raycastedAltitude, elevationAltitude);
         }
 
         void ResetThrusters()
@@ -482,6 +552,7 @@ namespace IngameScript
 
             _controlling = false;
             _landing = true;
+            _isHangarMode = false;
         }
 
         bool SubInit()
@@ -675,6 +746,18 @@ namespace IngameScript
             CLOCKWISE,
             UPSIDEDOWN,
             COUNTERCLOCKWISE
+        }
+
+        struct ValueTuple<A, B>
+        {
+            public A a;
+            public B b;
+
+            public ValueTuple(A a, B b)
+            {
+                this.a = a;
+                this.b = b;
+            }
         }
     }
 }
