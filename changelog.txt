@@ -2,3 +2,4 @@
 - fix unable to stop using LCD panel once the script start using it
 - "land" toggles landing mode instead of always switching it on
 - better handling when one of the thrusters gets damaged
+- added option to put flight information on the screens of the cockpit or programmable block

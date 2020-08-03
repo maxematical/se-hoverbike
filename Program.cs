@@ -26,6 +26,15 @@ namespace IngameScript
         // Change these values if you want to tweak the behavior of this script!
         // =====================================================================
 
+        // If this is true, the script will use the programmable block itself as an LCD screen and update the text on the
+        // programmable block (as well as any other LCDs the script has already detected).
+        // Default value: false
+        private const bool DISPLAY_ON_PB = false;
+
+        // Similar to DISPLAY_ON_PB
+        // Default value: false
+        private const bool DISPLAY_ON_COCKPIT = false;
+
         // The minimum altitude, in meters, this script will try to maintain. If the ship is below this altitude, it will fly up.
         // Default value: 3.5
         private const double NORMAL_MIN_ALTITUDE = 3.5;
@@ -95,7 +104,7 @@ namespace IngameScript
         private List<ScanningCamera> _forwardCameras;
         private List<ScanningCamera> _bottomCameras;
         private float _bottomCamerasMaxAngle;
-        private IMyTextSurface _maybeLcd;
+        private List<IMyTextSurface> _displays;
 
         // Control variables
         private bool _controlling;
@@ -180,13 +189,10 @@ namespace IngameScript
             if (argument == "stop")
             {
                 _controlling = false;
-
                 if (_initialized)
-                    ResetThrusters();
-
-                if (_maybeLcd != null)
                 {
-                    ResetLcd();
+                    ResetThrusters();
+                    ResetDisplays();
                 }
             }
             if (argument == "land")
@@ -391,12 +397,23 @@ namespace IngameScript
                 if (accel < minAccel) accel = minAccel;
             }
 
+            // Count non-damaged thrusters
+            int numFunctionalThrusters = 0;
+            foreach (IMyThrust thrust in _thrusters)
+            {
+                if (thrust.IsFunctional)
+                    numFunctionalThrusters++;
+            }
+
             // Set the thrust override to achieve the desired acceleration
             float totalThrust = (accel + gravity) * mass;
             foreach (IMyThrust thrust in _thrusters)
             {
+                if (!thrust.IsFunctional)
+                    continue;
+
                 float efficiency = thrust.MaxEffectiveThrust / thrust.MaxThrust;
-                float thrustOverride = totalThrust / efficiency / thrustAlignment / _thrusters.Count;
+                float thrustOverride = totalThrust / efficiency / thrustAlignment / numFunctionalThrusters;
                 thrust.ThrustOverride = Math.Max(thrustOverride, 0.0000000001f);
             }
 
@@ -406,19 +423,8 @@ namespace IngameScript
                 thrust.Enabled = !(_landing && altitude < LANDING_ALTITUDE_THRESHOLD);
             }
 
-            // Turn off and remove damaged thrusters
-            for (int i = _thrusters.Count - 1; i >= 0; i--)
-            {
-                if (!_thrusters[i].IsFunctional)
-                {
-                    _thrusters[i].ThrustOverride = 0f;
-                    _thrusters.RemoveAt(i);
-                    i--;
-                }
-            }
-
             // Update LCD (if any)
-            if (_maybeLcd != null)
+            foreach (IMyTextSurface display in _displays)
             {
                 string line1 = (Math.Abs(forwardVelocity) > 5) ? forwardVelocity.ToString("F0") : forwardVelocity.ToString("F1");
                 string line2 = (Math.Abs(sidewaysVelocity) > 5) ? sidewaysVelocity.ToString("F0") : sidewaysVelocity.ToString("F1");
@@ -441,8 +447,8 @@ namespace IngameScript
                 ////Debug difference between raycasted and elevation altitude:
                 //line3 = raycastedAltitude != null && elevationAltitude != null ? (raycastedAltitude.Value - elevationAltitude.Value).ToString("F1") : "a";
 
-                _maybeLcd.FontSize = 5.0f;
-                _maybeLcd.WriteText(line1 + '\n' + line2 + '\n' + line3);
+                display.FontSize = 5.0f;
+                display.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
                 // If we would have normally used raycasted altitude, but the ship is tilted so far that we need to use elevation
                 // altitude instead, this can result in inaccuracies (e.g. didn't detect the grid we are hovering over)
@@ -460,25 +466,25 @@ namespace IngameScript
                 // If we are in hangar mode, set the color to blue, otherwise set it to white
                 if (_isHangarMode)
                 {
-                    _maybeLcd.FontColor = new Color(50, 150, 185);
+                    display.FontColor = new Color(50, 150, 185);
                 }
                 else
                 {
-                    _maybeLcd.FontColor = new Color(255, 255, 255);
+                    display.FontColor = new Color(255, 255, 255);
                 }
 
                 // Determine background color of LCD panel
                 // If we are user controlled, flash purple
-                if (isUserControlled) _maybeLcd.BackgroundColor = (_totalTimeRan % 0.15 < 0.075) ? new Color(25, 0, 60) : new Color(30, 0, 50);
+                if (isUserControlled) display.BackgroundColor = (_totalTimeRan % 0.15 < 0.075) ? new Color(25, 0, 60) : new Color(30, 0, 50);
                 // If maximum acceleration is too low, warn the user and set the background to yellow or red
-                else if (maxAccel < 2f || isOverMaxAngle) _maybeLcd.BackgroundColor = new Color(75, 0, 0);
-                else if (maxAccel < 4f || isNearMaxAngle) _maybeLcd.BackgroundColor = new Color(40, 25, 0);
+                else if (maxAccel < 2f || isOverMaxAngle) display.BackgroundColor = new Color(75, 0, 0);
+                else if (maxAccel < 4f || isNearMaxAngle) display.BackgroundColor = new Color(40, 25, 0);
                 // If we are going right too fast, set background to blue
-                else if (sidewaysVelocity > 2f && !_isHangarMode) _maybeLcd.BackgroundColor = new Color(0, 0, (int) Math.Min(100, sidewaysVelocity * 10f));
+                else if (sidewaysVelocity > 2f && !_isHangarMode) display.BackgroundColor = new Color(0, 0, (int) Math.Min(100, sidewaysVelocity * 10f));
                 // If we are going left too fast, set background to green
-                else if (sidewaysVelocity < -2f && !_isHangarMode) _maybeLcd.BackgroundColor = new Color(0, (int) Math.Min(100, -sidewaysVelocity * 10f), 0);
+                else if (sidewaysVelocity < -2f && !_isHangarMode) display.BackgroundColor = new Color(0, (int) Math.Min(100, -sidewaysVelocity * 10f), 0);
                 // Otherwise, set background to black (transparent)
-                else _maybeLcd.BackgroundColor = Color.Black;
+                else display.BackgroundColor = Color.Black;
             }
         }
 
@@ -557,6 +563,7 @@ namespace IngameScript
 
         bool SubInit()
         {
+            // Find block group
             IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName(_blockGroupName);
             if (group == null)
             {
@@ -564,6 +571,7 @@ namespace IngameScript
                 return false;
             }
 
+            // Initialize thrusters and check that there is at least 1
             _thrusters = new List<IMyThrust>();
             group.GetBlocksOfType(_thrusters, x => x.IsSameConstructAs(Me));
             if (_thrusters.Count == 0)
@@ -572,6 +580,7 @@ namespace IngameScript
                 return false;
             }
 
+            // Initialize cockpit and check that it is found
             List<IMyCockpit> cockpitList = new List<IMyCockpit>();
             group.GetBlocksOfType(cockpitList);
             if (cockpitList.Count != 1)
@@ -581,23 +590,32 @@ namespace IngameScript
             }
             _cockpit = cockpitList[0];
 
+            // Initialize displays
+            _displays = new List<IMyTextSurface>();
+
+            if (DISPLAY_ON_PB)
+                _displays.Add(Me.GetSurface(0));
+            if (DISPLAY_ON_COCKPIT)
+                _displays.Add(_cockpit.GetSurface(0));
+
             List<IMyTextPanel> lcdList = new List<IMyTextPanel>();
             group.GetBlocksOfType(lcdList);
-            _maybeLcd = null;
-            if (lcdList.Count > 0)
+            foreach (IMyTextPanel lcd in lcdList)
             {
-                _maybeLcd = lcdList[0];
+                _displays.Add(lcd);
                 if (AUTOMATICALLY_SET_LCD_PARAMS)
                 {
-                    _maybeLcd.Alignment = TextAlignment.CENTER;
-                    _maybeLcd.FontColor = new Color(150, 150, 150);
-                    _maybeLcd.Font = "Monospace";
-                    _maybeLcd.FontSize = 5.0f;
-                    _maybeLcd.ContentType = ContentType.TEXT_AND_IMAGE;
+                    lcd.Alignment = TextAlignment.CENTER;
+                    lcd.FontColor = new Color(150, 150, 150);
+                    lcd.Font = "Monospace";
+                    lcd.FontSize = 5.0f;
+                    lcd.ContentType = ContentType.TEXT_AND_IMAGE;
                 }
-                ResetLcd();
             }
 
+            ResetDisplays();
+
+            // Initialize cameras
             List<IMyCameraBlock> cameraList = new List<IMyCameraBlock>();
             group.GetBlocksOfType(cameraList);
             _forwardCameras = new List<ScanningCamera>(cameraList.Count);
@@ -683,10 +701,13 @@ namespace IngameScript
             Me.CustomData = VERSION + '\n' + _blockGroupName;
         }
 
-        void ResetLcd()
+        void ResetDisplays()
         {
-            _maybeLcd.BackgroundColor = Color.Black;
-            _maybeLcd.WriteText("");
+            foreach (IMyTextSurface display in _displays)
+            {
+                display.BackgroundColor = Color.Black;
+                display.WriteText("");
+            }
         }
 
         float ToDeg(float rad) => rad * 57.2957795131f;
