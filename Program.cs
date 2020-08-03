@@ -255,8 +255,8 @@ namespace IngameScript
             float maxAccel = -gravity;
             foreach (IMyThrust thrust in _thrusters)
             {
-                // Acceleration is theoretically "Force / Mass", but we have to take into account the fact that the thrust
-                // vector might not be aligned with gravity
+                // Acceleration is theoretically "Force / Mass", but we have to take into account the fact that the thrust vector might not
+                // be aligned with gravity
                 float perfectAccel = thrust.MaxEffectiveThrust / mass;
                 maxAccel += perfectAccel * thrustAlignment;
             }
@@ -265,7 +265,6 @@ namespace IngameScript
             var altitudeTuple = CheckAltitude(gravityDown, shipDown);
             double? raycastedAltitude = altitudeTuple.a;
             double? elevationAltitude = altitudeTuple.b;
-
             double? maybeAltitude = raycastedAltitude ?? elevationAltitude; // prefer raycasted altitude, fall back to elevation altitude
             if (maybeAltitude == null)
             {
@@ -330,19 +329,19 @@ namespace IngameScript
             }
 
             // OK, we know everything we need to know to start doing the autopilot thingy
-            // Determine desired acceleration
-            float accel; // desired vertical acceleration after gravity is taken into account
-            bool isUserControlled = false;
+            // Determine desired net vertical acceleration (we'll take gravity into account later)
+            float accel;
+            bool isManualInput = false;
             if (Math.Abs(_cockpit.MoveIndicator.Y) > 0.1f)
             {
+                // Handle when the user presses Space or C
                 float clampedInput = 0.5f + 0.5f * _cockpit.MoveIndicator.Y;
                 if (clampedInput < -1) clampedInput = -1f;
                 if (clampedInput > 1) clampedInput = 1f;
 
                 accel = minAccel + (maxAccel - minAccel) * clampedInput;
-                isUserControlled = true;
+                isManualInput = true;
             }
-            //else { accel = 0f; } if (true) { }
             else if (_landing)
             {
                 // Handle when we want to land
@@ -354,6 +353,7 @@ namespace IngameScript
             }
             else if (altitude < minAltitude)
             {
+                // Handle when we are too low (below the minimum altitude)
                 if (slopeVelocity > 0)
                 {
                     // We are already moving up
@@ -372,6 +372,7 @@ namespace IngameScript
             }
             else if (altitude > maxAltitude)
             {
+                // Handle when we are too high (above the maximum altitude)
                 if (slopeVelocity < 0)
                 {
                     // We are moving down
@@ -391,6 +392,7 @@ namespace IngameScript
             }
             else
             {
+                // We are just between the minimum and maximum altitude
                 // Try to accelerate such that y-velocity will be zero
                 accel = -verticalVelocity;
                 if (accel > maxAccel) accel = maxAccel;
@@ -426,6 +428,10 @@ namespace IngameScript
             // Update LCD (if any)
             foreach (IMyTextSurface display in _displays)
             {
+                // Ignore keyboard on the programmable block
+                if (Me.SurfaceCount >= 2 && display == Me.GetSurface(1))
+                    continue;
+
                 string line1 = (Math.Abs(forwardVelocity) > 5) ? forwardVelocity.ToString("F0") : forwardVelocity.ToString("F1");
                 string line2 = (Math.Abs(sidewaysVelocity) > 5) ? sidewaysVelocity.ToString("F0") : sidewaysVelocity.ToString("F1");
                 string line3 = "";
@@ -447,7 +453,6 @@ namespace IngameScript
                 ////Debug difference between raycasted and elevation altitude:
                 //line3 = raycastedAltitude != null && elevationAltitude != null ? (raycastedAltitude.Value - elevationAltitude.Value).ToString("F1") : "a";
 
-                display.FontSize = 5.0f;
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
                 // If we would have normally used raycasted altitude, but the ship is tilted so far that we need to use elevation
@@ -475,7 +480,7 @@ namespace IngameScript
 
                 // Determine background color of LCD panel
                 // If we are user controlled, flash purple
-                if (isUserControlled) display.BackgroundColor = (_totalTimeRan % 0.15 < 0.075) ? new Color(25, 0, 60) : new Color(30, 0, 50);
+                if (isManualInput) display.BackgroundColor = (_totalTimeRan % 0.15 < 0.075) ? new Color(25, 0, 60) : new Color(30, 0, 50);
                 // If maximum acceleration is too low, warn the user and set the background to yellow or red
                 else if (maxAccel < 2f || isOverMaxAngle) display.BackgroundColor = new Color(75, 0, 0);
                 else if (maxAccel < 4f || isNearMaxAngle) display.BackgroundColor = new Color(40, 25, 0);
@@ -540,6 +545,7 @@ namespace IngameScript
             return new ValueTuple<double?, double?>(raycastedAltitude, elevationAltitude);
         }
 
+        // Resets the thrusters so that they are ready for normal controls.
         void ResetThrusters()
         {
             foreach (IMyThrust thrust in _thrusters)
@@ -593,24 +599,17 @@ namespace IngameScript
             // Initialize displays
             _displays = new List<IMyTextSurface>();
 
-            if (DISPLAY_ON_PB)
-                _displays.Add(Me.GetSurface(0));
             if (DISPLAY_ON_COCKPIT)
-                _displays.Add(_cockpit.GetSurface(0));
+                _displays.Add(FixDisplayParams(_cockpit.GetSurface(0), 3f));
+            if (DISPLAY_ON_PB)
+                for (int i = 0; i < Me.SurfaceCount; i++)
+                    _displays.Add(FixDisplayParams(Me.GetSurface(i)));
 
             List<IMyTextPanel> lcdList = new List<IMyTextPanel>();
             group.GetBlocksOfType(lcdList);
             foreach (IMyTextPanel lcd in lcdList)
             {
-                _displays.Add(lcd);
-                if (AUTOMATICALLY_SET_LCD_PARAMS)
-                {
-                    lcd.Alignment = TextAlignment.CENTER;
-                    lcd.FontColor = new Color(150, 150, 150);
-                    lcd.Font = "Monospace";
-                    lcd.FontSize = 5.0f;
-                    lcd.ContentType = ContentType.TEXT_AND_IMAGE;
-                }
+                _displays.Add(FixDisplayParams(lcd));
             }
 
             ResetDisplays();
@@ -708,6 +707,19 @@ namespace IngameScript
                 display.BackgroundColor = Color.Black;
                 display.WriteText("");
             }
+        }
+
+        IMyTextSurface FixDisplayParams(IMyTextSurface display, float fontSize = 5.0f)
+        {
+            if (AUTOMATICALLY_SET_LCD_PARAMS)
+            {
+                display.ContentType = ContentType.TEXT_AND_IMAGE;
+                display.Alignment = TextAlignment.CENTER;
+                display.FontColor = new Color(150, 150, 150);
+                display.Font = "Monospace";
+                display.FontSize = fontSize;
+            }
+            return display;
         }
 
         float ToDeg(float rad) => rad * 57.2957795131f;
