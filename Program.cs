@@ -92,6 +92,8 @@ namespace IngameScript
         private const double HANGAR_MODE_MIN_ALTITUDE = 2.0;
         private const double HANGAR_MODE_MAX_ALTITUDE = 3.0;
 
+        private const double SAFE_FALLING = 3.0;
+
         // ==============================================================================
         // DEBUG CONFIGURATION
         // These are likely not useful unless you're editing the script or told to change
@@ -282,6 +284,7 @@ namespace IngameScript
                 float perfectAccel = thrust.MaxEffectiveThrust / mass;
                 maxAccel += perfectAccel * thrustAlignment;
             }
+            float safeAccel = Math.Max(maxAccel - (float) SAFE_FALLING, 0.5f * (maxAccel + minAccel));
 
             // Determine current altitude
             var altitudeTuple = CheckAltitude(gravityDown, shipDown);
@@ -369,7 +372,7 @@ namespace IngameScript
                 if (slopeVelocity > 0)
                 {
                     // We are already moving up
-                    // Predict at what altitude we will stop if we start stopping now
+                    // Predict at what altitude we will stop if we start thrusting down now
                     // If we will stop over the minimum altitude, then it's time to stop
                     double t = -slopeVelocity / minAccel;
                     double y = altitude + slopeVelocity * t + 0.5 * minAccel * t * t;
@@ -388,12 +391,18 @@ namespace IngameScript
                 if (slopeVelocity < 0)
                 {
                     // We are moving down
-                    // Predict at what altitude we will stop if we start braking now
-                    // If we will stop under the maximum altitude, then it's time to brake
-                    double t = -slopeVelocity / maxAccel;
-                    double y = altitude + slopeVelocity * t + 0.5 * maxAccel * t * t;
+                    // Predict at what altitude we will stop if:
+                    //   a) we start braking with a smaller acceleration (safeAccel)
+                    //   b) we start braking with a larger acceleration (maxAccel)
+                    double y1 = EstimateStoppingDistance(altitude, slopeVelocity, safeAccel);
+                    double y2 = EstimateStoppingDistance(altitude, slopeVelocity, maxAccel);
 
-                    accel = (y < maxAltitude) ? maxAccel : minAccel;
+                    // If we won't stop at the desired altitude even when using maximum thrust, this could be bad. Put thrusters to the max!
+                    if (y2 < maxAltitude)       accel = maxAccel;
+                    // If we won't stop at the desired altitude if using safe thrust, this is probably still ok but use safe thrust
+                    else if (y1 < maxAltitude)  accel = safeAccel;
+                    // Otherwise we can keep falling
+                    else                        accel = minAccel;
                 }
                 else
                 {
@@ -573,6 +582,12 @@ namespace IngameScript
                 thrust.ThrustOverride = 0f;
                 thrust.Enabled = true;
             }
+        }
+
+        double EstimateStoppingDistance(double pos, double vel, float acc)
+        {
+            double t = -vel / acc;
+            return pos + vel * t + 0.5 * acc * t * t;
         }
 
         void Init()
