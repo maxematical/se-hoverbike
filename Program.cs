@@ -26,6 +26,8 @@ namespace IngameScript
         // Change these values if you want to tweak the behavior of this script!
         // =====================================================================
 
+        private const float X = 1.0f;
+
         // If this is true, the script will use the programmable block itself as an LCD screen and update the text on the
         // programmable block (as well as any other LCDs the script has already detected).
         // Default value: false
@@ -78,7 +80,9 @@ namespace IngameScript
         // more processing-heavy and could cause lag. (Note: the interval at which cameras can raycast may also be limited by
         // the server's settings)
         // Default value: 0.125
-        private const double GROUND_RAYCAST_INTERVAL = 0.125;
+        private const double GROUND_RAYCAST_INTERVAL = 0.001f;
+
+        private const double GROUND_RAYCAST_EXPIRY = 0.25;
 
         // The maximum distance, in meters, that downwards-facing cameras will raycast when trying to determine the height of the
         // ground. See GROUND_RAYCAST_INTERVAL for more info.
@@ -87,7 +91,16 @@ namespace IngameScript
 
         private const double HANGAR_MODE_MIN_ALTITUDE = 2.0;
         private const double HANGAR_MODE_MAX_ALTITUDE = 3.0;
-        
+
+        // ==============================================================================
+        // DEBUG CONFIGURATION
+        // These are likely not useful unless you're editing the script or told to change
+        // them by a developer
+        // ==============================================================================
+
+        // Show difference between raycasted altitude and cockpit altitude on third line of LCD
+        private const bool DEBUG_RAYCAST_DIFF = true;
+
         // ==========================================================================
         // Don't change anything below this line (unless you want to edit the script)
         // ==========================================================================
@@ -106,7 +119,7 @@ namespace IngameScript
         private float _bottomCamerasMaxAngle;
         private List<IMyTextSurface> _displays;
 
-        // Control variables
+        // Control variables (public to save state between script runs)
         private bool _controlling;
         private bool _landing;
         private bool _isHangarMode;
@@ -117,6 +130,10 @@ namespace IngameScript
 
         // Computed slope of the ground
         private double _slope;
+
+        // Computed center mass
+        private Vector3 _localCenterOfMass;
+        private float _comPhysicalMass;
 
         private double _totalTimeRan;
 
@@ -152,6 +169,7 @@ namespace IngameScript
             // Handle actions that don't require script initialization
             if (argument == "init")
             {
+                SaveCustomData();
                 Init();
                 return;
             }
@@ -216,6 +234,10 @@ namespace IngameScript
 
             MyShipVelocities myVelocity = _cockpit.GetShipVelocities();
             Vector3 velocity = myVelocity.LinearVelocity;
+
+            // Recalculate center of mass if necessary
+            if (mass != _comPhysicalMass)
+                ComputeLocalCenterOfMass();
 
             // Determine gravity vector
             float gravity = (float)_cockpit.GetNaturalGravity().Length();
@@ -315,18 +337,8 @@ namespace IngameScript
             }
 
             // Determine the desired minumum/maximum altitude based on the current control settings
-            double minAltitude;
-            double maxAltitude;
-            if (_isHangarMode)
-            {
-                minAltitude = HANGAR_MODE_MIN_ALTITUDE;
-                maxAltitude = HANGAR_MODE_MAX_ALTITUDE;
-            }
-            else
-            {
-                minAltitude = NORMAL_MIN_ALTITUDE;
-                maxAltitude = NORMAL_MAX_ALTITUDE;
-            }
+            double minAltitude = _isHangarMode ? HANGAR_MODE_MIN_ALTITUDE : NORMAL_MIN_ALTITUDE;
+            double maxAltitude = _isHangarMode ? HANGAR_MODE_MAX_ALTITUDE : NORMAL_MAX_ALTITUDE;
 
             // OK, we know everything we need to know to start doing the autopilot thingy
             // Determine desired net vertical acceleration (we'll take gravity into account later)
@@ -432,10 +444,12 @@ namespace IngameScript
                 if (Me.SurfaceCount >= 2 && display == Me.GetSurface(1))
                     continue;
 
+                // Determine first two lines to write
                 string line1 = (Math.Abs(forwardVelocity) > 5) ? forwardVelocity.ToString("F0") : forwardVelocity.ToString("F1");
                 string line2 = (Math.Abs(sidewaysVelocity) > 5) ? sidewaysVelocity.ToString("F0") : sidewaysVelocity.ToString("F1");
-                string line3 = "";
 
+                // Determine third line to write
+                string line3 = "";
                 if (_landing)
                 {
                     line3 = "LAND";
@@ -450,9 +464,23 @@ namespace IngameScript
                 {
                     line3 = stoppingDistance.ToString("F0");
                 }
-                ////Debug difference between raycasted and elevation altitude:
-                //line3 = raycastedAltitude != null && elevationAltitude != null ? (raycastedAltitude.Value - elevationAltitude.Value).ToString("F1") : "a";
 
+                // Debug difference between raycasted and elevation altitude
+                if (DEBUG_RAYCAST_DIFF)
+                    line3 = (raycastedAltitude != null && elevationAltitude != null) ?
+                        (raycastedAltitude.Value - elevationAltitude.Value).ToString("F2") :
+                        "none";
+
+                //line2 = gravityDown.LengthSquared().ToString("F2"); // gravityDown magnitude is correct
+                float diff = Vector3.Dot(-gravityDown, _bottomCameras[0]._cameraBlock.GetPosition() - _cockpit.GetPosition());
+                line2 = diff.ToString("f2");
+
+                _cockpit.CustomData = FormatGPS(_cockpit.GetPosition(), "scr Cockpit pos") + "\n" +
+                    FormatGPS(_bottomCameras[0]._cameraBlock.GetPosition(), "scr Camera pos") + "\n" +
+                    FormatGPS(_bottomCameras[0]._cameraBlock.GetPosition() + gravityDown * diff, "scr Camera pos cockpit level") + "\n" +
+                    FormatGPS(Me.CubeGrid.GetPosition(), "scr CubeGrid GetPosition hopefully COM");
+
+                // Write text onto display
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
                 // If we would have normally used raycasted altitude, but the ship is tilted so far that we need to use elevation
@@ -469,20 +497,15 @@ namespace IngameScript
 
                 // Determine text color of LCD panel
                 // If we are in hangar mode, set the color to blue, otherwise set it to white
-                if (_isHangarMode)
-                {
-                    display.FontColor = new Color(50, 150, 185);
-                }
-                else
-                {
-                    display.FontColor = new Color(255, 255, 255);
-                }
+                if (_isHangarMode) display.FontColor = new Color(50, 150, 185);
+                else display.FontColor = new Color(255, 255, 255);
 
                 // Determine background color of LCD panel
                 // If we are user controlled, flash purple
                 if (isManualInput) display.BackgroundColor = (_totalTimeRan % 0.15 < 0.075) ? new Color(25, 0, 60) : new Color(30, 0, 50);
-                // If maximum acceleration is too low, warn the user and set the background to yellow or red
+                // If maximum acceleration is too low, warn the user and set the background to red
                 else if (maxAccel < 2f || isOverMaxAngle) display.BackgroundColor = new Color(75, 0, 0);
+                // If maximum acceleration is almost too low, warn the user and set the background to yellow
                 else if (maxAccel < 4f || isNearMaxAngle) display.BackgroundColor = new Color(40, 25, 0);
                 // If we are going right too fast, set background to blue
                 else if (sidewaysVelocity > 2f && !_isHangarMode) display.BackgroundColor = new Color(0, 0, (int) Math.Min(100, sidewaysVelocity * 10f));
@@ -498,40 +521,37 @@ namespace IngameScript
         ValueTuple<double?, double?> CheckAltitude(Vector3 gravDown, Vector3 shipDown)
         {
             // Ideally, check altitude using camera raycast
-            // Count the number of cameras with a valid raycast result
-            int numRecentRaycastedCameras = 0;
-
             // Go through each bottom camera and check if we haven't raycasted recently; if so, do another raycast
             foreach (ScanningCamera sc in _bottomCameras)
             {
-                double timeSinceLastRaycast = _totalTimeRan - sc._lastRaycastTime;
+                // Do a raycast if we haven't raycasted recently and the camera's distance limit is high enough
+                double timeSinceLastRaycast = _totalTimeRan - (sc._recentRaycast?._time ?? -100);
                 double rayDistLimit = sc._cameraBlock.RaycastDistanceLimit;
                 if (timeSinceLastRaycast >= GROUND_RAYCAST_INTERVAL && (rayDistLimit >= MAX_DOWNWARDS_RAYCAST || rayDistLimit < 0))
                 {
                     // Do the raycast!
                     MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(sc._cameraBlock.GetPosition() + gravDown * (float) MAX_DOWNWARDS_RAYCAST);
-                    if (raycast.Type != MyDetectedEntityType.None && !raycast.IsEmpty())
+                    if (!raycast.IsEmpty() /*&& raycast.HitPosition != null*/)
                     {
-                        float verticalDistFromCockpit = Vector3.Dot(-shipDown, sc._cameraBlock.GetPosition() - _cockpit.GetPosition()) * 0.5f;
-                        sc._lastRaycastResult = Vector3.Distance(sc._cameraBlock.GetPosition(), raycast.HitPosition.Value) - verticalDistFromCockpit;
-                        sc._lastRaycastTime = _totalTimeRan;
+                        // Got the result, store it into the ScanningCamera
+                        float verticalDistFromCockpit = Vector3.Dot(-gravDown, sc._cameraBlock.GetPosition() - GetCenterOfMass()) * X;
+                        RaycastResult result = new RaycastResult();
+                        result._distance = Vector3.Distance(sc._cameraBlock.WorldMatrix.Translation, raycast.HitPosition.Value) - verticalDistFromCockpit;
+                        result._time = _totalTimeRan;
+
+                        sc._previousRaycast = sc._recentRaycast;
+                        sc._recentRaycast = result;
                     }
                 }
-
-                if (sc._lastRaycastResult != null && timeSinceLastRaycast <= GROUND_RAYCAST_INTERVAL * 3) numRecentRaycastedCameras++;
             }
 
             // Calculate the altitude using recently raycasted cameras.
             double? raycastedAltitude = null;
-            if (numRecentRaycastedCameras > 0)
+            foreach (ScanningCamera sc in _bottomCameras)
             {
-                double leastAltitude = double.MaxValue;
-                foreach (ScanningCamera sc in _bottomCameras)
-                {
-                    if (sc._lastRaycastResult != null)
-                        leastAltitude = Math.Min(leastAltitude, sc._lastRaycastResult.Value);
-                }
-                raycastedAltitude = leastAltitude;
+                double? scResult = sc.ExtrapolateRaycast(_totalTimeRan);
+                if (scResult != null)
+                    raycastedAltitude = Math.Min(raycastedAltitude ?? double.MaxValue, scResult.Value);
             }
 
             // Calculate the altitude using cockpit altitude
@@ -561,10 +581,6 @@ namespace IngameScript
 
             if (_initialized) Echo("Script initialized successfully.");
             else Echo("Couldn't initialize script.");
-
-            _controlling = false;
-            _landing = true;
-            _isHangarMode = false;
         }
 
         bool SubInit()
@@ -673,6 +689,9 @@ namespace IngameScript
                 Echo("Raycast result: " + raycast.Name);
             }
 
+            ComputeLocalCenterOfMass();
+            _cockpit.CustomData = FormatGPS(GetCenterOfMass(), "Center of mass");
+
             return true;
         }
 
@@ -681,23 +700,116 @@ namespace IngameScript
             string data = Me.CustomData;
 
             string[] lines = data.Split('\n');
-            if (lines[0] == VERSION && lines.Length >= 2)
+            if (lines.Length >= 2)
             {
                 // CustomData is valid, load the data
                 _blockGroupName = lines[1];
+
+                // Load controlling/landing/hangarmode state
+                if (lines.Length >= 3 && lines[2].Length >= 3)
+                {
+                    _controlling = (lines[2][0] == 'y');
+                    _landing = (lines[2][1] == 'y');
+                    _isHangarMode = (lines[2][2] == 'y');
+                }
             }
             else
             {
                 // CustomData is invalid, load default data
                 _blockGroupName = DEFAULT_BLOCK_GROUP;
+
+                _controlling = false;
+                _landing = false;
+                _isHangarMode = false;
             }
 
             SaveCustomData();
         }
 
+        // Computes the grid-local center of mass of this ship and stores it in _localCenterOfMass.
+        void ComputeLocalCenterOfMass()
+        {
+            // TODO: For some reason this algorithm is slightly inaccurate, the mass is different from the PhysicalMass and the actual
+            // location returned is also slightly off.
+
+            IMyCubeGrid grid = Me.CubeGrid;
+
+            Vector3I min = grid.Min;
+            Vector3I max = grid.Max;
+
+            // Determine the total mass of the grid
+            float totalMass = 0f;
+            for (int z = min.Z; z <= max.Z; z++)
+            {
+                for (int y = min.Y; y <= max.Y; y++)
+                {
+                    for (int x = min.X; x <= max.X; x++)
+                    {
+                        IMySlimBlock block = grid.GetCubeBlock(new Vector3I(x, y, z));
+                        if (block != null)
+                            totalMass += GetBlockMass(block);
+                    }
+                }
+            }
+
+            // Determine center of mass
+            Vector3 centerOfMass = new Vector3();
+            for (int z = min.Z; z <= max.Z; z++)
+            {
+                for (int y = min.Y; y <= max.Y; y++)
+                {
+                    for (int x = min.X; x <= max.X; x++)
+                    {
+                        IMySlimBlock block = grid.GetCubeBlock(new Vector3I(x, y, z));
+                        if (block != null)
+                        {
+                            centerOfMass += new Vector3(x, y, z) * GetBlockMass(block) / totalMass;
+                        }
+                    }
+                }
+            }
+
+            // Store center of mass
+            _localCenterOfMass = centerOfMass;
+            _comPhysicalMass = _cockpit.CalculateShipMass().PhysicalMass;
+        }
+
+        // Calculates the center of mass in world coordinates.
+        Vector3 GetCenterOfMass() =>
+            Vector3.Transform(Me.CubeGrid.GridSize * _localCenterOfMass, Me.CubeGrid.WorldMatrix);
+
+        float GetBlockMass(IMySlimBlock block)
+        {
+            float mass = block.FatBlock?.Mass ?? block.Mass;
+            if (block is IMyEntity)
+            {
+                IMyEntity entity = (IMyEntity) block;
+                for (int i = 0; i < entity.InventoryCount; i++)
+                    mass += (float) entity.GetInventory(i).CurrentMass;
+                if (entity.HasInventory)
+                    mass += (float) entity.GetInventory().CurrentMass;
+            }
+            return mass / GetBlockVolume(block);
+        }
+
+        int GetBlockVolume(IMySlimBlock block)
+        {
+            if (block.FatBlock != null)
+            {
+                Vector3I dimensions = block.FatBlock.Max - block.FatBlock.Min + Vector3I.One;
+                return dimensions.X * dimensions.Y * dimensions.Z;
+            }
+            return 1;
+        }
+
         void SaveCustomData()
         {
-            Me.CustomData = VERSION + '\n' + _blockGroupName;
+            string state = "";
+            state += (_controlling ? 'y' : 'n');
+            state += (_landing ? 'y' : 'n');
+            state += (_isHangarMode ? 'y' : 'n');
+
+            Me.CustomData = VERSION + '\n' + _blockGroupName + '\n' + state;
         }
 
         void ResetDisplays()
@@ -736,6 +848,18 @@ namespace IngameScript
         string FormatGPS(Vector3 position, string gpsName) =>
             $"GPS:{gpsName}:{position.X.ToString("F5")}:{position.Y.ToString("F5")}:{position.Z.ToString("F5")}:";
 
+        string FormatGPS(Vector3D position, string gpsName) =>
+            $"GPS:{gpsName}:{position.X.ToString("F5")}:{position.Y.ToString("F5")}:{position.Z.ToString("F5")}:";
+
+        // Describes the successful (hit) result of a raycast.
+        struct RaycastResult
+        {
+            // The distance from the hit raycast
+            public double _distance;
+            // The time that this raycast was performed (see _totalTimeRan)
+            public double _time;
+        }
+
         class ScanningCamera
         {
             // The camera block this scanning camera uses
@@ -744,11 +868,36 @@ namespace IngameScript
             // The rotation of this camera relative to the cockpit, from the perspective of looking forward in the cockpit
             public CameraRotation _rotation;
 
-            // The distance from the last successful (hit) raycast, or null if there hasn't been any raycasts so far
-            public double? _lastRaycastResult = null;
+            // The most recent raycast performed
+            public RaycastResult? _recentRaycast;
 
-            // The last time that this camera has raycasted (see _totalTimeRan)
-            public double _lastRaycastTime = double.MinValue;
+            // The second-most recent raycast performed
+            public RaycastResult? _previousRaycast;
+
+            // Based on the results from recent raycasts, estimates the distance that we'd get if we did a raycast right now.
+            public double? ExtrapolateRaycast(double currentTime)
+            {
+                // Ensure that we have at least one recent raycast
+                if (_recentRaycast != null && (currentTime - _recentRaycast.Value._time) < GROUND_RAYCAST_EXPIRY)
+                {
+                    if (_previousRaycast != null && (currentTime - _previousRaycast.Value._time) < 2 * GROUND_RAYCAST_EXPIRY)
+                    {
+                        // We have two recent raycasts. Perform a linear extrapolation of data to estimate current raycast value
+                        RaycastResult r1 = _previousRaycast.Value;
+                        RaycastResult r2 = _recentRaycast.Value;
+                        double m = (r2._distance - r1._distance) / (r2._time - r1._time);
+                        return r2._distance + m * (currentTime - r2._time);
+                    }
+                    else
+                    {
+                        // There is only one recent raycast, so just return the most recent one (no extrapolation possible)
+                        return _recentRaycast.Value._distance;
+                    }
+                }
+
+                // No recent raycasts, there is nothing to go off of
+                return null;
+            }
 
             public void TransformRotation(ref float pitch, ref float yaw)
             {
