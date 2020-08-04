@@ -26,8 +26,6 @@ namespace IngameScript
         // Change these values if you want to tweak the behavior of this script!
         // =====================================================================
 
-        private const float X = 1.0f;
-
         // If this is true, the script will use the programmable block itself as an LCD screen and update the text on the
         // programmable block (as well as any other LCDs the script has already detected).
         // Default value: false
@@ -80,19 +78,37 @@ namespace IngameScript
         // more processing-heavy and could cause lag. (Note: the interval at which cameras can raycast may also be limited by
         // the server's settings)
         // Default value: 0.125
-        private const double GROUND_RAYCAST_INTERVAL = 0.001f;
+        private const double GROUND_RAYCAST_INTERVAL = 0.125;
 
-        private const double GROUND_RAYCAST_EXPIRY = 0.25;
+        // (Advanced) How long, in seconds, the result of a raycast will be used before it is considered outdated and not used
+        // anymore. See GROUND_RAYCAST_INTERVAL for more info.
+        // Default value: 2 * GROUND_RAYCAST_INTERVAL
+        private const double GROUND_RAYCAST_EXPIRY = 2 * GROUND_RAYCAST_INTERVAL;
 
         // The maximum distance, in meters, that downwards-facing cameras will raycast when trying to determine the height of the
         // ground. See GROUND_RAYCAST_INTERVAL for more info.
         // Default value: 150.0
         private const double MAX_DOWNWARDS_RAYCAST = 150.0;
 
-        private const double HANGAR_MODE_MIN_ALTITUDE = 2.0;
-        private const double HANGAR_MODE_MAX_ALTITUDE = 3.0;
+        // The minimum altitude the script will try to maintain while in hangar mode, in meters.
+        // Default value: 1.0
+        private const double HANGAR_MODE_MIN_ALTITUDE = 1.0;
 
+        // The maximum altitude the script will try to maintain while in hangar mode, in meters.
+        // Default value: 1.5
+        private const double HANGAR_MODE_MAX_ALTITUDE = 1.5;
+
+        // The more this value is, the earlier the hoverbike will brake when it's high in the air. When braking early, it will keep
+        // using maximal thrust if necessary, but otherwise will use less thrust to avoid stopping too early. Setting this value to 0 will
+        // disable the safe falling feature.
+        // Default value: 3.0
         private const double SAFE_FALLING = 3.0;
+
+        // (Advanced) If this constant is true, then the script will attempt to adjust the altitude obtained using downward-facing
+        // raycast cameras to be more similar to the altitude obtained via the cockpit. This feature is probably not necessary, but
+        // it is still left here in case it turns out to be useful in the future. Turn on DEBUG_RAYCAST_DIFF to see the effect.
+        // Default value: false
+        private const bool RAYCAST_RELATIVE_TO_COM = false;
 
         // ==============================================================================
         // DEBUG CONFIGURATION
@@ -101,7 +117,7 @@ namespace IngameScript
         // ==============================================================================
 
         // Show difference between raycasted altitude and cockpit altitude on third line of LCD
-        private const bool DEBUG_RAYCAST_DIFF = true;
+        private const bool DEBUG_RAYCAST_DIFF = false;
 
         // ==========================================================================
         // Don't change anything below this line (unless you want to edit the script)
@@ -284,7 +300,7 @@ namespace IngameScript
                 float perfectAccel = thrust.MaxEffectiveThrust / mass;
                 maxAccel += perfectAccel * thrustAlignment;
             }
-            float safeAccel = Math.Max(maxAccel - (float) SAFE_FALLING, 0.5f * (maxAccel + minAccel));
+            float safeAccel = Math.Max(maxAccel - (float) SAFE_FALLING, 4f);
 
             // Determine current altitude
             var altitudeTuple = CheckAltitude(gravityDown, shipDown);
@@ -480,15 +496,6 @@ namespace IngameScript
                         (raycastedAltitude.Value - elevationAltitude.Value).ToString("F2") :
                         "none";
 
-                //line2 = gravityDown.LengthSquared().ToString("F2"); // gravityDown magnitude is correct
-                float diff = Vector3.Dot(-gravityDown, _bottomCameras[0]._cameraBlock.GetPosition() - _cockpit.GetPosition());
-                line2 = diff.ToString("f2");
-
-                _cockpit.CustomData = FormatGPS(_cockpit.GetPosition(), "scr Cockpit pos") + "\n" +
-                    FormatGPS(_bottomCameras[0]._cameraBlock.GetPosition(), "scr Camera pos") + "\n" +
-                    FormatGPS(_bottomCameras[0]._cameraBlock.GetPosition() + gravityDown * diff, "scr Camera pos cockpit level") + "\n" +
-                    FormatGPS(Me.CubeGrid.GetPosition(), "scr CubeGrid GetPosition hopefully COM");
-
                 // Write text onto display
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
@@ -543,7 +550,7 @@ namespace IngameScript
                     if (!raycast.IsEmpty() /*&& raycast.HitPosition != null*/)
                     {
                         // Got the result, store it into the ScanningCamera
-                        float verticalDistFromCockpit = Vector3.Dot(-gravDown, sc._cameraBlock.GetPosition() - GetCenterOfMass()) * X;
+                        float verticalDistFromCockpit = Vector3.Dot(-gravDown, sc._cameraBlock.GetPosition() - GetCenterOfMass()) * (RAYCAST_RELATIVE_TO_COM ? 1f : 0f);
                         RaycastResult result = new RaycastResult();
                         result._distance = Vector3.Distance(sc._cameraBlock.WorldMatrix.Translation, raycast.HitPosition.Value) - verticalDistFromCockpit;
                         result._time = _totalTimeRan;
