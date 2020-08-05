@@ -26,22 +26,34 @@ namespace IngameScript
         // Change these values if you want to tweak the behavior of this script!
         // =====================================================================
 
-        // If this is true, the script will use the programmable block itself as an LCD screen and update the text on the
-        // programmable block (as well as any other LCDs the script has already detected).
-        // Default value: false
-        private const bool DISPLAY_ON_PB = false;
-
-        // Similar to DISPLAY_ON_PB
-        // Default value: false
-        private const bool DISPLAY_ON_COCKPIT = false;
-
-        // The minimum altitude, in meters, this script will try to maintain. If the ship is below this altitude, it will fly up.
+        // The minimum altitude this script will normally try to maintain, in meters. If the ship is below this altitude, it will
+        // fly up.
         // Default value: 3.5
         private const double NORMAL_MIN_ALTITUDE = 3.5;
 
-        // The maximum altitude, in meters, this script will try to maintain. If the ship is above this altitude, it will fly down.
+        // The maximum altitude this script will normally try to maintain, in meters. If the ship is above this altitude, it will
+        // fly down.
         // Default value: 7.0
         private const double NORMAL_MAX_ALTITUDE = 7.0;
+
+        // The minimum altitude the script will try to maintain while in hangar mode, in meters. Hangar mode can be activated by
+        // running the argument "Hangar" and is turned off by running "Auto".
+        // Default value: 1.0
+        private const double HANGAR_MODE_MIN_ALTITUDE = 1.0;
+
+        // The maximum altitude the script will try to maintain while in hangar mode, in meters. Hangar mode can be activated by
+        // running the argument "Hangar" and is turned off by running "Auto".
+        // Default value: 1.5
+        private const double HANGAR_MODE_MAX_ALTITUDE = 1.5;
+
+        // If this is true, the script display on the programmable block's LCD screen, as well as any other LCDs in use. The
+        // programmable block does not need to be added to the Hoverbike group.
+        // Default value: false
+        private const bool DISPLAY_ON_PB = false;
+
+        // If this is true, the script will display its output on one of the cockpit's LCD screen as well. Similar to DISPLAY_ON_PB.
+        // Default value: false
+        private const bool DISPLAY_ON_COCKPIT = false;
 
         // The vertical speed that the script will try to maintain when landing.
         // Default value: 3.5
@@ -85,8 +97,9 @@ namespace IngameScript
         private const double GROUND_RAYCAST_INTERVAL = 0.125;
 
         // (Advanced) How long, in seconds, the result of a raycast will be used before it is considered outdated and not used
-        // anymore. See GROUND_RAYCAST_INTERVAL for more info.
-        // Default value: 2 * GROUND_RAYCAST_INTERVAL
+        // anymore. In this case the script will fall back to the default altitude algorithms. See GROUND_RAYCAST_INTERVAL for more
+        // info.
+        // Default value: (2 * GROUND_RAYCAST_INTERVAL)
         private const double GROUND_RAYCAST_EXPIRY = 2 * GROUND_RAYCAST_INTERVAL;
 
         // The maximum distance, in meters, that downwards-facing cameras will raycast when trying to determine the height of the
@@ -94,17 +107,9 @@ namespace IngameScript
         // Default value: 150.0
         private const double MAX_DOWNWARDS_RAYCAST = 150.0;
 
-        // The minimum altitude the script will try to maintain while in hangar mode, in meters.
-        // Default value: 1.0
-        private const double HANGAR_MODE_MIN_ALTITUDE = 1.0;
-
-        // The maximum altitude the script will try to maintain while in hangar mode, in meters.
-        // Default value: 1.5
-        private const double HANGAR_MODE_MAX_ALTITUDE = 1.5;
-
         // The more this value is, the earlier the hoverbike will brake when it's high in the air. When braking early, it will keep
-        // using maximal thrust if necessary, but otherwise will use less thrust to avoid stopping too early. Setting this value to 0 will
-        // disable the safe falling feature.
+        // using maximal thrust if necessary, but otherwise will use less thrust to avoid stopping too early. Setting this value to 0
+        // will disable the safe falling feature.
         // Default value: 3.0
         private const double SAFE_FALLING = 3.0;
 
