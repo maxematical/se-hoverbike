@@ -72,6 +72,8 @@ namespace IngameScript
         // Default value: 5.0
         private const double GROUND_HEIGHT_SAMPLE_RATE = 5.0;
 
+        private const double GROUND_HEIGHT_SAMPLE_INTERVAL = 0.25;
+
         // If the ship has bottom-facing cameras, the script will perform use these cameras to perform a raycast (scan) several
         // times every second to check the height of the ground. This is the interval, in seconds, between each raycast. A
         // smaller interval will result in more raycasts, which means more accurate height measurements, but makes the script
@@ -145,6 +147,7 @@ namespace IngameScript
         // Variables related to obtaining ground height through checking altitude & sea level
         private Vector3 _lastSeaLevelPos;
         private double _lastGroundHeight;
+        private double _lastGroundHeightTime;
 
         // Computed slope of the ground
         private double _slope;
@@ -328,12 +331,18 @@ namespace IngameScript
 
             // Measure the slope of the ground by seeing how fast ground height is changing
             Vector3D seaLevelPosition = _cockpit.GetPosition() - gravityDown * (float) distanceAboveSl;
-            if (Vector3.DistanceSquared(seaLevelPosition, _lastSeaLevelPos) >= (GROUND_HEIGHT_SAMPLE_RATE * GROUND_HEIGHT_SAMPLE_RATE))
+            if (Vector3.DistanceSquared(seaLevelPosition, _lastSeaLevelPos) >= (GROUND_HEIGHT_SAMPLE_RATE * GROUND_HEIGHT_SAMPLE_RATE) ||
+                (_totalTimeRan - _lastGroundHeightTime) >= GROUND_HEIGHT_SAMPLE_INTERVAL)
             {
-                _slope = (groundHeight - _lastGroundHeight) / Vector3.Distance(seaLevelPosition, _lastSeaLevelPos);
+                double distance = Vector3.Distance(seaLevelPosition, _lastSeaLevelPos);
+                if (distance > 0.01f)
+                {
+                    _slope = (groundHeight - _lastGroundHeight) / distance;
 
-                _lastSeaLevelPos = seaLevelPosition;
-                _lastGroundHeight = groundHeight;
+                    _lastSeaLevelPos = seaLevelPosition;
+                    _lastGroundHeight = groundHeight;
+                    _lastGroundHeightTime = _totalTimeRan;
+                }
             }
 
             // Calculate the vertical velocity, but take into account the slope of the ground.
@@ -495,6 +504,8 @@ namespace IngameScript
                     line3 = (raycastedAltitude != null && elevationAltitude != null) ?
                         (raycastedAltitude.Value - elevationAltitude.Value).ToString("F2") :
                         "none";
+
+                line3 = (_slope * 100).ToString("F1");
 
                 // Write text onto display
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
