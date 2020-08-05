@@ -157,7 +157,14 @@ namespace IngameScript
         private double _lastGroundHeightTime;
 
         // Computed slope of the ground
+        private double _measuredSlope;
         private double _slope;
+        private double _leastGroundHeight;
+        private double _leastGroundHeightUpdateTime = double.MinValue;
+
+        // Last forward scan
+        private float _raycastedSlope;
+        private double _lastSlopeScanTime;
 
         // Computed center mass
         private Vector3 _localCenterOfMass;
@@ -328,6 +335,10 @@ namespace IngameScript
 
             // Check the ground height by comparing our current altitude to the distance from planet center
             double groundHeight = distFromPlanetCenter - altitude;
+            _leastGroundHeight = (_totalTimeRan - _leastGroundHeightUpdateTime) < GROUND_HEIGHT_SAMPLE_INTERVAL ?
+                Math.Min(_leastGroundHeight, groundHeight) :
+                groundHeight;
+            _leastGroundHeightUpdateTime = _totalTimeRan;
 
             // Determine components of velocity relative to various axes
             float verticalVelocity = Vector3.Dot(velocity, -gravityDown);
@@ -343,13 +354,17 @@ namespace IngameScript
                 double distance = Vector3.Distance(groundHeightPos, _lastGroundHeightPos);
                 if (distance > 0.01f)
                 {
-                    _slope = (groundHeight - _lastGroundHeight) / distance;
+                    _measuredSlope = (_leastGroundHeight - _lastGroundHeight) / distance;
 
-                    _lastGroundHeight = groundHeight;
+                    _lastGroundHeight = _leastGroundHeight;
                     _lastGroundHeightPos = groundHeightPos;
                     _lastGroundHeightTime = _totalTimeRan;
+
+                    _leastGroundHeight = float.MaxValue;
                 }
             }
+            DoScanAhead(velocity, gravityDown, altitude);
+            _slope = (_totalTimeRan - _lastSlopeScanTime < 0.25f) ? Math.Max(_measuredSlope, _raycastedSlope) : _measuredSlope;
 
             // Calculate the vertical velocity, but take into account the slope of the ground.
             double slopeVelocity = verticalVelocity - Math.Max(_slope, 0.0) * horizontalVelocity.Length();
@@ -405,9 +420,7 @@ namespace IngameScript
                     // We are already moving up
                     // Predict at what altitude we will stop if we start thrusting down now
                     // If we will stop over the minimum altitude, then it's time to stop
-                    double t = -slopeVelocity / minAccel;
-                    double y = altitude + slopeVelocity * t + 0.5 * minAccel * t * t;
-
+                    double y = EstimateStoppingDistance(altitude, slopeVelocity, minAccel);
                     accel = (y > minAltitude) ? minAccel : maxAccel;
                 }
                 else
@@ -509,6 +522,9 @@ namespace IngameScript
                         (raycastedAltitude.Value._altitude - elevationAltitude.Value._altitude).ToString("F2") :
                         "none";
 
+                // Debug raycasted slope
+                line3 = _raycastedSlope.ToString("F3");
+
                 // Write text onto display
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
@@ -598,6 +614,46 @@ namespace IngameScript
 
             // Return the results from both altitude checks
             return new ValueTuple<Altitude?, Altitude?>(raycastedAltitude, elevationAltitude);
+        }
+
+        void DoScanAhead(Vector3 velocity, Vector3 gravityDown, double altitude)
+        {
+            // Scan 1.5s ahead
+            float secondsAhead = 1.5f;
+            Vector3 horizontalVelocity = velocity - gravityDown * Vector3.Dot(velocity, gravityDown);
+            //Vector3 expectedDelta = (velocity + -gravityDown * (float) (_measuredSlope) * horizontalVelocity.Length()) * secondsAhead + gravityDown * (float) altitude;
+            Vector3 expectedDelta = horizontalVelocity * secondsAhead;
+            float raycastDistance = expectedDelta.Length();
+
+            // Find camera to do the raycast with
+            ScanningCamera useCamera = null;
+            foreach (ScanningCamera sc in _forwardCameras)
+            {
+                if (sc._cameraBlock.RaycastDistanceLimit < 0 || sc._cameraBlock.RaycastDistanceLimit >= raycastDistance)
+                {
+                    useCamera = sc;
+                    break;
+                }
+            }
+            if (useCamera == null)
+                return; // no camera found
+
+            // Perform the raycast
+            MyDetectedEntityInfo result = useCamera._cameraBlock.Raycast(useCamera._cameraBlock.GetPosition() + expectedDelta);
+            if (!result.IsEmpty() && result.HitPosition != null)
+            {
+                float hitDistanceUpwards = Vector3.Dot(result.HitPosition.Value - useCamera._cameraBlock.GetPosition(), -gravityDown) + (float) altitude;
+                Vector3 hitHorizontalDelta = horizontalVelocity*secondsAhead;// result.HitPosition.Value + gravityDown * hitDistanceUpwards - useCamera._cameraBlock.GetPosition();
+                _raycastedSlope = hitDistanceUpwards / hitHorizontalDelta.Length();
+                _lastSlopeScanTime = _totalTimeRan;
+            }
+
+            _cockpit.CustomData = $"Raycasted ahead {raycastDistance.ToString("F1")},\n" +
+                $"  Horizontal velocity: {horizontalVelocity.Length().ToString("F1")},\n" +
+                $"  Found? {!result.IsEmpty()}\n\n";
+            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition(), "scr Camera Pos") + "\n";
+            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + expectedDelta, "scr Raycast To") + "\n";
+            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + horizontalVelocity * secondsAhead, "scr Horiz Prediction") + "\n";
         }
 
         // Resets the thrusters so that they are ready for normal controls.
@@ -731,7 +787,6 @@ namespace IngameScript
             }
 
             ComputeLocalCenterOfMass();
-            _cockpit.CustomData = FormatGPS(GetCenterOfMass(), "Center of mass");
 
             return true;
         }
@@ -768,11 +823,10 @@ namespace IngameScript
         }
 
         // Computes the grid-local center of mass of this ship and stores it in _localCenterOfMass.
+        // For some reason, this algorithm is slightly flawed, calculates the wrong total mass (as compared to PhysicalMass), and the
+        // calculated center of mass is slightly off. However, it is better than nothing.
         void ComputeLocalCenterOfMass()
         {
-            // TODO: For some reason this algorithm is slightly inaccurate, the mass is different from the PhysicalMass and the actual
-            // location returned is also slightly off.
-
             IMyCubeGrid grid = Me.CubeGrid;
 
             Vector3I min = grid.Min;
