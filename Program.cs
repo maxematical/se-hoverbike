@@ -67,7 +67,7 @@ namespace IngameScript
         // Normally, the script will automatically set the parameters of the LCD panel to make sure the text is easily visible.
         // If this is false it will not do so.
         // Default value: true
-        private const bool AUTOMATICALLY_SET_LCD_PARAMS = true;
+        private const bool AUTOMATICALLY_SET_LCD_PARAMS = false;//TODO
 
         // When the ship is slowing down and its deceleration at least this value, then the ship's stopping distance will be
         // displayed on the third line of the LCD panel.
@@ -352,7 +352,7 @@ namespace IngameScript
                 (_totalTimeRan - _lastGroundHeightTime) >= GROUND_HEIGHT_SAMPLE_INTERVAL)
             {
                 double distance = Vector3.Distance(groundHeightPos, _lastGroundHeightPos);
-                if (distance > 0.01f)
+                if (distance > 0.1f)
                 {
                     _measuredSlope = (_leastGroundHeight - _lastGroundHeight) / distance;
 
@@ -362,9 +362,15 @@ namespace IngameScript
 
                     _leastGroundHeight = float.MaxValue;
                 }
+                else
+                {
+                    _measuredSlope = 0f;
+                }
             }
             DoScanAhead(velocity, gravityDown, altitude);
-            _slope = (_totalTimeRan - _lastSlopeScanTime < 0.25f) ? Math.Max(_measuredSlope, _raycastedSlope) : _measuredSlope;
+            //_slope = Math.Max(_measuredSlope, _raycastedSlope);//(_totalTimeRan - _lastSlopeScanTime < 0.25f) ? Math.Max(_measuredSlope, _raycastedSlope) : _measuredSlope;
+            _slope = _measuredSlope;
+            //_slope = _raycastedSlope;
 
             // Calculate the vertical velocity, but take into account the slope of the ground.
             double slopeVelocity = verticalVelocity - Math.Max(_slope, 0.0) * horizontalVelocity.Length();
@@ -522,8 +528,11 @@ namespace IngameScript
                         (raycastedAltitude.Value._altitude - elevationAltitude.Value._altitude).ToString("F2") :
                         "none";
 
-                // Debug raycasted slope
-                line3 = _raycastedSlope.ToString("F3");
+                // Debug slope
+                line3 = "m" + _measuredSlope.ToString("F3");
+                //line3 += "\ns" + slopeVelocity.ToString("F2");
+                line3 += "\na" + altitude.ToString("F2");
+                line3 += "\ng" + groundHeight.ToString("F2");
 
                 // Write text onto display
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
@@ -620,10 +629,16 @@ namespace IngameScript
         {
             // Scan 1.5s ahead
             float secondsAhead = 1.5f;
-            Vector3 horizontalVelocity = velocity - gravityDown * Vector3.Dot(velocity, gravityDown);
+            float distanceAhead = 20f;
+            Vector3 horizontalDirection = velocity - gravityDown * Vector3.Dot(velocity, gravityDown);
+            horizontalDirection.Normalize();
+
             //Vector3 expectedDelta = (velocity + -gravityDown * (float) (_measuredSlope) * horizontalVelocity.Length()) * secondsAhead + gravityDown * (float) altitude;
-            Vector3 expectedDelta = horizontalVelocity * secondsAhead;
-            float raycastDistance = expectedDelta.Length();
+            Vector3 raycastDelta = horizontalDirection * distanceAhead +
+                (-gravityDown) * (float) _slope * distanceAhead +
+                gravityDown * (float) altitude;
+            raycastDelta *= 1.1f;
+            float raycastDistance = raycastDelta.Length();
 
             // Find camera to do the raycast with
             ScanningCamera useCamera = null;
@@ -639,21 +654,30 @@ namespace IngameScript
                 return; // no camera found
 
             // Perform the raycast
-            MyDetectedEntityInfo result = useCamera._cameraBlock.Raycast(useCamera._cameraBlock.GetPosition() + expectedDelta);
+            MyDetectedEntityInfo result = useCamera._cameraBlock.Raycast(useCamera._cameraBlock.GetPosition() + raycastDelta);
             if (!result.IsEmpty() && result.HitPosition != null)
             {
                 float hitDistanceUpwards = Vector3.Dot(result.HitPosition.Value - useCamera._cameraBlock.GetPosition(), -gravityDown) + (float) altitude;
-                Vector3 hitHorizontalDelta = horizontalVelocity*secondsAhead;// result.HitPosition.Value + gravityDown * hitDistanceUpwards - useCamera._cameraBlock.GetPosition();
+                Vector3 hitHorizontalDelta = distanceAhead * horizontalDirection;// result.HitPosition.Value + gravityDown * hitDistanceUpwards - useCamera._cameraBlock.GetPosition();
                 _raycastedSlope = hitDistanceUpwards / hitHorizontalDelta.Length();
                 _lastSlopeScanTime = _totalTimeRan;
             }
+            else
+            {
+                _raycastedSlope -= 0.001f;
+            }
 
-            _cockpit.CustomData = $"Raycasted ahead {raycastDistance.ToString("F1")},\n" +
-                $"  Horizontal velocity: {horizontalVelocity.Length().ToString("F1")},\n" +
-                $"  Found? {!result.IsEmpty()}\n\n";
+            //_cockpit.CustomData = $"Raycasted ahead {raycastDistance.ToString("F1")},\n" +
+            //    $"  Horizontal velocity: {horizontalVelocity.Length().ToString("F1")},\n" +
+            //    $"  Found? {!result.IsEmpty()}\n\n";
+            _cockpit.CustomData = "";
             _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition(), "scr Camera Pos") + "\n";
-            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + expectedDelta, "scr Raycast To") + "\n";
-            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + horizontalVelocity * secondsAhead, "scr Horiz Prediction") + "\n";
+            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + raycastDelta, "scr Raycast To") + "\n";
+            if (result.HitPosition != null) _cockpit.CustomData += FormatGPS(result.HitPosition.Value, "scr Raycast Hit") + "\n";
+            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + -gravityDown * (float) altitude, "scr Ground Pos");
+
+            _cockpit.CustomData += $"\n(Altitude {altitude.ToString("F1")}\n";
+            //_cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + horizontalVelocity * secondsAhead, "scr Horiz Prediction") + "\n";
         }
 
         // Resets the thrusters so that they are ready for normal controls.
@@ -996,10 +1020,10 @@ namespace IngameScript
                         // We have two recent raycasts. Perform a linear extrapolation of data to estimate current raycast value
                         RaycastResult r1 = _previousRaycast.Value;
                         RaycastResult r2 = _recentRaycast.Value;
-                        double m1 = (r2._distance - r1._distance) / (r2._time - r1._time);
-                        double m2 = (r2._distFromPlanetCenter - r1._distFromPlanetCenter) / (r2._time - r1._time);
-                        double alt = r2._distance + m1 * (currentTime - r2._time);
-                        double dst = r2._distFromPlanetCenter + m2 * (currentTime - r2._time);
+                        double am = (r2._distance - r1._distance) / (r2._time - r1._time);
+                        double dm = (r2._distFromPlanetCenter - r1._distFromPlanetCenter) / (r2._time - r1._time);
+                        double alt = r2._distance + am * (currentTime - r2._time);
+                        double dst = r2._distFromPlanetCenter + dm * (currentTime - r2._time);
                         return new Altitude(alt, dst);
                     }
                     else
