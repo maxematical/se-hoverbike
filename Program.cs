@@ -82,11 +82,11 @@ namespace IngameScript
         // (Advanced) To calculate the slope of the ground, the script will automatically check the height of the ground every
         // few meters. This value means how many meters the script should wait before checking the height of the ground again.
         // Default value: 5.0
-        private const double GROUND_HEIGHT_SAMPLE_RATE = 5.0;
+        private const double SLOPE_SAMPLE_RATE = 5.0;
 
-        // (Advanced) Similar to GROUND_HEIGHT_SAMPLE_RATE, this is the interval in seconds between calculating the slope.
+        // (Advanced) Similar to SLOPE_SAMPLE_RATE, this is the interval in seconds between calculating the slope.
         // Default value: 0.5
-        private const double GROUND_HEIGHT_SAMPLE_INTERVAL = 0.5;
+        private const double SLOPE_SAMPLE_INTERVAL = 0.5;
 
         // If the ship has bottom-facing cameras, the script will perform use these cameras to perform a raycast (scan) several
         // times every second to check the height of the ground. This is the interval, in seconds, between each raycast. A
@@ -117,7 +117,7 @@ namespace IngameScript
         // raycast cameras to be more similar to the altitude obtained via the cockpit. This feature is probably not necessary, but
         // it is still left here in case it turns out to be useful in the future. Turn on DEBUG_RAYCAST_DIFF to see the effect.
         // Default value: false
-        private const bool RAYCAST_RELATIVE_TO_COM = false;
+        //private const bool RAYCAST_RELATIVE_TO_COM = false; Doesn't work anymore
 
         // ==============================================================================
         // DEBUG CONFIGURATION
@@ -125,8 +125,7 @@ namespace IngameScript
         // them by a developer
         // ==============================================================================
 
-        // Show difference between raycasted altitude and cockpit altitude on third line of LCD
-        private const bool DEBUG_RAYCAST_DIFF = false;
+        // no debug variables
 
         // ==========================================================================
         // Don't change anything below this line (unless you want to edit the script)
@@ -151,20 +150,20 @@ namespace IngameScript
         private bool _landing;
         private bool _isHangarMode;
 
-        // Variables related to obtaining ground height through checking altitude & sea level
-        private Vector3 _lastGroundHeightPos;
-        private double _lastGroundHeight;
-        private double _lastGroundHeightTime;
+        //// Variables related to obtaining ground height through checking altitude & sea level
+        //// (Would have been used for computing slope of the ground)
+        //private Vector3 _lastGroundHeightPos;
+        //private double _lastGroundHeight;
+        //private double _lastGroundHeightTime;
 
-        // Computed slope of the ground
-        private double _measuredSlope;
-        private double _slope;
-        private double _leastGroundHeight;
-        private double _leastGroundHeightUpdateTime = double.MinValue;
+        private Info _info;
+        private SlopeMeasurer _slopeMeasurer;
+        private AltitudeProvider _raycastAltitudeProvider;
+        private AltitudeProvider _elevationAltitudeProvider;
 
-        // Last forward scan
-        private float _raycastedSlope;
-        private double _lastSlopeScanTime;
+        //// Last forward scan
+        //private float _raycastedSlope;
+        //private double _lastSlopeScanTime;
 
         // Computed center mass
         private Vector3 _localCenterOfMass;
@@ -325,55 +324,40 @@ namespace IngameScript
             }
             float safeAccel = Math.Max(maxAccel - (float) SAFE_FALLING, 4f);
 
-            // Determine current altitude
-            var altitudeTuple = CheckAltitude(gravityDown, shipDown, velocity, horizontalVelocity.Length());
-            Altitude? raycastedAltitude = altitudeTuple.a;
-            Altitude? elevationAltitude = altitudeTuple.b;
-            Altitude? maybeAltitude = raycastedAltitude ?? elevationAltitude; // prefer raycasted altitude, fall back to elevation altitude
-            if (maybeAltitude == null)
+            // Determine planet center
+            Vector3D planetCenter;
+            if (!_cockpit.TryGetPlanetPosition(out planetCenter))
             {
-                Echo("Couldn't compute altitude " + _totalTimeRan.ToString("F1"));
-                ResetThrusters();
+                Echo("Not in gravity well");
                 return;
             }
-            double altitude = maybeAltitude.Value._altitude;
-            double distFromPlanetCenter = maybeAltitude.Value._distFromPlanetCenter;
 
-            // Check the ground height by comparing our current altitude to the distance from planet center
-            double groundHeight = distFromPlanetCenter - altitude;
-            _leastGroundHeight = (_totalTimeRan - _leastGroundHeightUpdateTime) < GROUND_HEIGHT_SAMPLE_INTERVAL ?
-                Math.Min(_leastGroundHeight, groundHeight) :
-                groundHeight;
-            _leastGroundHeightUpdateTime = _totalTimeRan;
+            // Determine radius of sea level
+            float sealevelRadius = 60000f; // TODO Configurable
 
-            // Measure the slope of the ground by seeing how fast ground height is changing
-            Vector3D groundHeightPos = maybeAltitude.Value._referencePos;
-            if (Vector3.DistanceSquared(groundHeightPos, _lastGroundHeightPos) >= (GROUND_HEIGHT_SAMPLE_RATE * GROUND_HEIGHT_SAMPLE_RATE) ||
-                (_totalTimeRan - _lastGroundHeightTime) >= GROUND_HEIGHT_SAMPLE_INTERVAL)
+            // Update info
+            _info.cockpit = _cockpit;
+            _info.gravityDown = gravityDown;
+            _info.gravityUp = -gravityDown;
+            _info.planetCenter = planetCenter;
+            _info.sealevelRadius = sealevelRadius;
+            _info.slopeRate = _slopeMeasurer._Slope * horizontalVelocity.Length();
+            _info.time = (float) _totalTimeRan;
+            _info.verticalVelocity = verticalVelocity;
+
+            // Determine current altitude
+            AltitudeData? altitudeData = _raycastAltitudeProvider.GetAltitude(_slopeMeasurer, _info) ??
+                _elevationAltitudeProvider.GetAltitude(_slopeMeasurer, _info);
+            if (!altitudeData.HasValue)
             {
-                double distance = Vector3.Distance(groundHeightPos, _lastGroundHeightPos);
-                if (distance > 0.1f)
-                {
-                    _measuredSlope = (_leastGroundHeight - _lastGroundHeight) / distance;
-
-                    _lastGroundHeight = _leastGroundHeight;
-                    _lastGroundHeightPos = groundHeightPos;
-                    _lastGroundHeightTime = _totalTimeRan;
-
-                    _leastGroundHeight = float.MaxValue;
-                }
-                else
-                {
-                    _measuredSlope = 100f;
-                }
+                Echo("Couldn't determine the ship's altitude");
+                return;
             }
-            DoScanAhead(velocity, gravityDown, altitude);
-            //_slope = Math.Max(_measuredSlope, _raycastedSlope);//(_totalTimeRan - _lastSlopeScanTime < 0.25f) ? Math.Max(_measuredSlope, _raycastedSlope) : _measuredSlope;
-            _slope = _measuredSlope;
-            //_slope = _raycastedSlope;
+            float altitude = altitudeData.Value.altitude;
+            float groundHeight = altitudeData.Value.groundHeight;
 
-            // Calculate the vertical velocity, but take into account the slope of the ground.
-            double slopeVelocity = verticalVelocity - Math.Max(_slope, 0.0) * horizontalVelocity.Length();
+            // TODO: Enable forward scanning
+            //DoScanAhead(velocity, gravityDown, altitude);
 
             // Determine the magnitude of the current thrust vector
             float currentThrustAmount = 0f;
@@ -401,7 +385,7 @@ namespace IngameScript
             bool isManualInput;
             {
                 var result = CalculateDesiredAccel(altitude, minAltitude, maxAltitude,
-                    slopeVelocity,
+                    verticalVelocity - _info.slopeRate,
                     minAccel, safeAccel, maxAccel);
                 accel = result.a;
                 isManualInput = result.b;
@@ -445,9 +429,9 @@ namespace IngameScript
                 {
                     line3 = "LAND";
                 }
-                else if (_isHangarMode && raycastedAltitude != null)
+                else if (_isHangarMode)
                 {
-                    line3 = raycastedAltitude.Value._altitude.ToString("F1");
+                    line3 = altitude.ToString("F1");
                 }
                 else if (stoppingDistance >= 0 &&
                     Math.Abs(forwardAcceleration) > DISPLAY_STOPDIST_THRESHOLD_ACCEL &&
@@ -456,14 +440,8 @@ namespace IngameScript
                     line3 = stoppingDistance.ToString("F0");
                 }
 
-                // Debug difference between raycasted and elevation altitude
-                if (DEBUG_RAYCAST_DIFF)
-                    line3 = (raycastedAltitude != null && elevationAltitude != null) ?
-                        (raycastedAltitude.Value._altitude - elevationAltitude.Value._altitude).ToString("F2") :
-                        "none";
-
                 // Debug slope
-                line3 = "s" + _slope.ToString("F3");
+                line3 = "s" + _slopeMeasurer._Slope.ToString("F3");
                 //line3 += "\ng" + groundHeight.ToString("F1");
                 //line3 += "\n" + (distFromPlanetCenter - altitude).ToString("F1");
                 //line3 += "\nv" + slopeVelocity.ToString("F3");
@@ -583,131 +561,61 @@ namespace IngameScript
             }
         }
 
-        // Checks the current altitude of the ship using both raycasts (if available) and planet elevation (if available).
-        // Returns a tuple where the first member is the raycasted altitude, and the second member is the elevation-determined altitude.
-        ValueTuple<Altitude?, Altitude?> CheckAltitude(Vector3 gravityDown, Vector3 shipDown, Vector3 velocity, float horizontalSpeed)
-        {
-            // Check the planet center (needed for both camera-based altitude and elevation-based altitude)
-            Vector3D planetCenter;
-            if (!_cockpit.TryGetPlanetPosition(out planetCenter))
-                return new ValueTuple<Altitude?, Altitude?>(null, null);
+        // TODO: Implement forward scanning
+        //void DoScanAhead(Vector3 velocity, Vector3 gravityDown, double altitude)
+        //{
+        //    // Scan 1.5s ahead
+        //    float secondsAhead = 1.5f;
+        //    float distanceAhead = 20f;
+        //    Vector3 horizontalDirection = velocity - gravityDown * Vector3.Dot(velocity, gravityDown);
+        //    horizontalDirection.Normalize();
 
-            // Calculate distance from center of planet to sea level
-            double sealevel;
-            _cockpit.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out sealevel);
-            float seadist = Vector3.Distance(planetCenter, GetApproxCenterOfMass() - gravityDown * (float) sealevel);
+        //    //Vector3 expectedDelta = (velocity + -gravityDown * (float) (_measuredSlope) * horizontalVelocity.Length()) * secondsAhead + gravityDown * (float) altitude;
+        //    Vector3 raycastDelta = horizontalDirection * distanceAhead +
+        //        (-gravityDown) * (float) _slope * distanceAhead +
+        //        gravityDown * (float) altitude;
+        //    raycastDelta *= 1.1f;
+        //    float raycastDistance = raycastDelta.Length();
 
-            // Ideally, check altitude using camera raycast
-            // Go through each bottom camera and check if we haven't raycasted recently; if so, do another raycast
-            RaycastBottomCameras(gravityDown, planetCenter);
+        //    // Find camera to do the raycast with
+        //    ScanningCamera useCamera = null;
+        //    foreach (ScanningCamera sc in _forwardCameras)
+        //    {
+        //        if (sc._cameraBlock.RaycastDistanceLimit < 0 || sc._cameraBlock.RaycastDistanceLimit >= raycastDistance)
+        //        {
+        //            useCamera = sc;
+        //            break;
+        //        }
+        //    }
+        //    if (useCamera == null)
+        //        return; // no camera found
 
-            // 1.) Calculate the altitude using bottom cameras
-            Altitude? raycastedAltitude = null;
-            foreach (ScanningCamera sc in _bottomCameras)
-            {
-                Altitude? result = sc.ExtrapolateRaycast(_totalTimeRan, seadist, Vector3.Dot(velocity, -gravityDown), -gravityDown,
-                    _slope * horizontalSpeed);
-                if (result != null && (raycastedAltitude == null || result.Value._altitude < raycastedAltitude.Value._altitude))
-                    raycastedAltitude = result;
-            }
+        //    // Perform the raycast
+        //    MyDetectedEntityInfo result = useCamera._cameraBlock.Raycast(useCamera._cameraBlock.GetPosition() + raycastDelta);
+        //    if (!result.IsEmpty() && result.HitPosition != null)
+        //    {
+        //        float hitDistanceUpwards = Vector3.Dot(result.HitPosition.Value - useCamera._cameraBlock.GetPosition(), -gravityDown) + (float) altitude;
+        //        Vector3 hitHorizontalDelta = distanceAhead * horizontalDirection;// result.HitPosition.Value + gravityDown * hitDistanceUpwards - useCamera._cameraBlock.GetPosition();
+        //        _raycastedSlope = hitDistanceUpwards / hitHorizontalDelta.Length();
+        //        _lastSlopeScanTime = _totalTimeRan;
+        //    }
+        //    else
+        //    {
+        //        _raycastedSlope -= 0.001f;
+        //    }
 
-            // 2.) Calculate the altitude using elevation
-            Altitude? elevationAltitude = null;
-            double elevationAltitude2;
-            double elevationSealevel;
-            if (_cockpit.TryGetPlanetElevation(MyPlanetElevation.Surface, out elevationAltitude2) &&
-                _cockpit.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out elevationSealevel))
-                elevationAltitude = new Altitude(elevationAltitude2,
-                    Vector3.Distance(GetApproxCenterOfMass(), planetCenter),
-                    GetApproxCenterOfMass() - gravityDown * (float) elevationSealevel);
+        //    //_cockpit.CustomData = $"Raycasted ahead {raycastDistance.ToString("F1")},\n" +
+        //    //    $"  Horizontal velocity: {horizontalVelocity.Length().ToString("F1")},\n" +
+        //    //    $"  Found? {!result.IsEmpty()}\n\n";
+        //    _cockpit.CustomData = "";
+        //    _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition(), "scr Camera Pos") + "\n";
+        //    _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + raycastDelta, "scr Raycast To") + "\n";
+        //    if (result.HitPosition != null) _cockpit.CustomData += FormatGPS(result.HitPosition.Value, "scr Raycast Hit") + "\n";
+        //    _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + -gravityDown * (float) altitude, "scr Ground Pos");
 
-            // Return the results from both altitude checks
-            return new ValueTuple<Altitude?, Altitude?>(raycastedAltitude, elevationAltitude);
-        }
-
-        void RaycastBottomCameras(Vector3 gravityDown, Vector3 planetCenter)
-        {
-            foreach (ScanningCamera sc in _bottomCameras)
-            {
-                // Do a raycast if we haven't raycasted recently and the camera's distance limit is high enough
-                double timeSinceLastRaycast = _totalTimeRan - (sc._recentRaycast?._time ?? -100);
-                double rayDistLimit = sc._cameraBlock.RaycastDistanceLimit;
-                if (timeSinceLastRaycast >= GROUND_RAYCAST_INTERVAL && (rayDistLimit >= MAX_DOWNWARDS_RAYCAST || rayDistLimit < 0))
-                {
-                    // Do the raycast!
-                    MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(sc._cameraBlock.GetPosition() + gravityDown * (float) MAX_DOWNWARDS_RAYCAST);
-                    if (!raycast.IsEmpty())
-                    {
-                        // Got the result, store it into the ScanningCamera
-                        float verticalDistFromCockpit = Vector3.Dot(-gravityDown, sc._cameraBlock.GetPosition() - GetApproxCenterOfMass()) * (RAYCAST_RELATIVE_TO_COM ? 1f : 0f);
-                        RaycastResult result = new RaycastResult();
-                        result._distance = Vector3.Distance(sc._cameraBlock.WorldMatrix.Translation, raycast.HitPosition.Value) - verticalDistFromCockpit;
-                        result._time = _totalTimeRan;
-                        result._distFromPlanetCenter = Vector3.Distance(planetCenter, sc._cameraBlock.GetPosition());
-                        result._position = sc._cameraBlock.GetPosition();
-                        result._planetCenter = planetCenter;
-
-                        sc._previousRaycast = sc._recentRaycast;
-                        sc._recentRaycast = result;
-                    }
-                }
-            }
-        }
-        
-        void DoScanAhead(Vector3 velocity, Vector3 gravityDown, double altitude)
-        {
-            // Scan 1.5s ahead
-            float secondsAhead = 1.5f;
-            float distanceAhead = 20f;
-            Vector3 horizontalDirection = velocity - gravityDown * Vector3.Dot(velocity, gravityDown);
-            horizontalDirection.Normalize();
-
-            //Vector3 expectedDelta = (velocity + -gravityDown * (float) (_measuredSlope) * horizontalVelocity.Length()) * secondsAhead + gravityDown * (float) altitude;
-            Vector3 raycastDelta = horizontalDirection * distanceAhead +
-                (-gravityDown) * (float) _slope * distanceAhead +
-                gravityDown * (float) altitude;
-            raycastDelta *= 1.1f;
-            float raycastDistance = raycastDelta.Length();
-
-            // Find camera to do the raycast with
-            ScanningCamera useCamera = null;
-            foreach (ScanningCamera sc in _forwardCameras)
-            {
-                if (sc._cameraBlock.RaycastDistanceLimit < 0 || sc._cameraBlock.RaycastDistanceLimit >= raycastDistance)
-                {
-                    useCamera = sc;
-                    break;
-                }
-            }
-            if (useCamera == null)
-                return; // no camera found
-
-            // Perform the raycast
-            MyDetectedEntityInfo result = useCamera._cameraBlock.Raycast(useCamera._cameraBlock.GetPosition() + raycastDelta);
-            if (!result.IsEmpty() && result.HitPosition != null)
-            {
-                float hitDistanceUpwards = Vector3.Dot(result.HitPosition.Value - useCamera._cameraBlock.GetPosition(), -gravityDown) + (float) altitude;
-                Vector3 hitHorizontalDelta = distanceAhead * horizontalDirection;// result.HitPosition.Value + gravityDown * hitDistanceUpwards - useCamera._cameraBlock.GetPosition();
-                _raycastedSlope = hitDistanceUpwards / hitHorizontalDelta.Length();
-                _lastSlopeScanTime = _totalTimeRan;
-            }
-            else
-            {
-                _raycastedSlope -= 0.001f;
-            }
-
-            //_cockpit.CustomData = $"Raycasted ahead {raycastDistance.ToString("F1")},\n" +
-            //    $"  Horizontal velocity: {horizontalVelocity.Length().ToString("F1")},\n" +
-            //    $"  Found? {!result.IsEmpty()}\n\n";
-            _cockpit.CustomData = "";
-            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition(), "scr Camera Pos") + "\n";
-            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + raycastDelta, "scr Raycast To") + "\n";
-            if (result.HitPosition != null) _cockpit.CustomData += FormatGPS(result.HitPosition.Value, "scr Raycast Hit") + "\n";
-            _cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + -gravityDown * (float) altitude, "scr Ground Pos");
-
-            _cockpit.CustomData += $"\n(Altitude {altitude.ToString("F1")}\n";
-            //_cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + horizontalVelocity * secondsAhead, "scr Horiz Prediction") + "\n";
-        }
+        //    _cockpit.CustomData += $"\n(Altitude {altitude.ToString("F1")}\n";
+        //    //_cockpit.CustomData += FormatGPS(useCamera._cameraBlock.GetPosition() + horizontalVelocity * secondsAhead, "scr Horiz Prediction") + "\n";
+        //}
 
         // Resets the thrusters so that they are ready for normal controls.
         void ResetThrusters()
@@ -814,38 +722,11 @@ namespace IngameScript
 
             ComputeLocalCenterOfMass();
 
+            _slopeMeasurer = new SlopeMeasurer();
+            _raycastAltitudeProvider = new RaycastAltitudeProvider(_bottomCameras);
+            _elevationAltitudeProvider = new ElevationAltitudeProvider();
+
             return true;
-        }
-
-        void LoadCustomData()
-        {
-            string data = Me.CustomData;
-
-            string[] lines = data.Split('\n');
-            if (lines.Length >= 2)
-            {
-                // CustomData is valid, load the data
-                _blockGroupName = lines[1];
-
-                // Load controlling/landing/hangarmode state
-                if (lines.Length >= 3 && lines[2].Length >= 3)
-                {
-                    _controlling = (lines[2][0] == 'y');
-                    _landing = (lines[2][1] == 'y');
-                    _isHangarMode = (lines[2][2] == 'y');
-                }
-            }
-            else
-            {
-                // CustomData is invalid, load default data
-                _blockGroupName = DEFAULT_BLOCK_GROUP;
-
-                _controlling = false;
-                _landing = false;
-                _isHangarMode = false;
-            }
-
-            SaveCustomData();
         }
 
         // Computes the grid-local center of mass of this ship and stores it in _localCenterOfMass.
@@ -923,6 +804,37 @@ namespace IngameScript
             return 1;
         }
 
+        void LoadCustomData()
+        {
+            string data = Me.CustomData;
+
+            string[] lines = data.Split('\n');
+            if (lines.Length >= 2)
+            {
+                // CustomData is valid, load the data
+                _blockGroupName = lines[1];
+
+                // Load controlling/landing/hangarmode state
+                if (lines.Length >= 3 && lines[2].Length >= 3)
+                {
+                    _controlling = (lines[2][0] == 'y');
+                    _landing = (lines[2][1] == 'y');
+                    _isHangarMode = (lines[2][2] == 'y');
+                }
+            }
+            else
+            {
+                // CustomData is invalid, load default data
+                _blockGroupName = DEFAULT_BLOCK_GROUP;
+
+                _controlling = false;
+                _landing = false;
+                _isHangarMode = false;
+            }
+
+            SaveCustomData();
+        }
+
         void SaveCustomData()
         {
             string state = "";
@@ -978,33 +890,211 @@ namespace IngameScript
         static string FormatGPS(Vector3D position, string gpsName) =>
             $"GPS:{gpsName}:{position.X.ToString("F5")}:{position.Y.ToString("F5")}:{position.Z.ToString("F5")}:";
 
-        // Describes the successful (hit) result of a raycast.
-        struct RaycastResult
+        class SlopeMeasurer
         {
-            // The distance from the hit raycast
-            public double _distance;
-            // The time that this raycast was performed (see _totalTimeRan)
-            public double _time;
-            // The distance the camera was from the planet center when it performed the raycast
-            public double _distFromPlanetCenter;
-            // The position the camera was at when it performed the raycast
-            public Vector3 _position;
-            // The position of the planet center when performing the raycast
-            public Vector3 _planetCenter;
+            public float _Slope { get; private set; }
+
+            private float? lastGroundHeight;
+            private Vector3? lastSeaLevelPos;
+            private float lastUpdateTime;
+
+            public SlopeMeasurer()
+            {
+                Reset();
+            }
+
+            public void Reset()
+            {
+                _Slope = 0f;
+                lastGroundHeight = null;
+                lastSeaLevelPos = null;
+                lastUpdateTime = float.MinValue;
+            }
+
+            public void PushMeasurements(float groundHeight, Vector3 seaLevelPos, float time, bool forceUpdate = false)
+            {
+                if (lastGroundHeight.HasValue && lastSeaLevelPos.HasValue)
+                {
+                    float distanceBetweenSamples = Vector3.Distance(seaLevelPos, lastSeaLevelPos.Value);
+                    bool shouldUpdateSlope = forceUpdate ||
+                        (distanceBetweenSamples >= SLOPE_SAMPLE_RATE) ||
+                        ((time - lastUpdateTime) >= SLOPE_SAMPLE_INTERVAL);
+
+                    if (shouldUpdateSlope)
+                    {
+                        _Slope = (groundHeight - lastGroundHeight.Value) / distanceBetweenSamples;
+                        lastGroundHeight = groundHeight;
+                        lastSeaLevelPos = seaLevelPos;
+                        lastUpdateTime = time;
+                    }
+                }
+                else
+                {
+                    lastGroundHeight = groundHeight;
+                    lastSeaLevelPos = seaLevelPos;
+                    lastUpdateTime = time;
+                }
+            }
         }
 
-        struct Altitude
+        struct AltitudeData
         {
-            public double _altitude;
-            public double _distFromPlanetCenter;
-            // Reference position for where the altitude was taken. These will always be the same distance from the planet center
-            public Vector3 _referencePos;
+            public float altitude;
+            public float groundHeight;
+            public float time;
 
-            public Altitude(double altitude, double groundHeight, Vector3 referencePos)
+            public AltitudeData(float altitude, float groundHeight, float time)
             {
-                _altitude = altitude;
-                _distFromPlanetCenter = groundHeight;
-                _referencePos = referencePos;
+                this.altitude = altitude;
+                this.groundHeight = groundHeight;
+                this.time = time;
+            }
+        }
+
+        class Info
+        {
+            public Vector3 gravityDown;
+            public Vector3 gravityUp;
+            public Vector3 planetCenter;
+            public float verticalVelocity;
+            public float time;
+            // Distance from planet center to sea level
+            public float sealevelRadius;
+            // How fast the ground is rising in m/s
+            public float slopeRate;
+
+            public IMyCockpit cockpit;
+        }
+
+        interface AltitudeProvider
+        {
+            // Gets altitude data from the altitude provider. This method will push data to the slope measurer if necessary
+            AltitudeData? GetAltitude(SlopeMeasurer slopeMeasurer, Info info);
+        }
+
+        class RaycastAltitudeProvider : AltitudeProvider
+        {
+            private List<ScanningCamera> _bottomCameras;
+            private AltitudeData?[] _previousRaycasts;
+
+            public RaycastAltitudeProvider(List<ScanningCamera> bottomCameras)
+            {
+                Reset(bottomCameras);
+            }
+
+            void Reset(List<ScanningCamera> bottomCameras)
+            {
+                _bottomCameras = bottomCameras;
+                _previousRaycasts = new AltitudeData?[bottomCameras.Count];
+            }
+
+            public AltitudeData? GetAltitude(SlopeMeasurer slopeMeasurer, Info info)
+            {
+                // Do raycasts, inform slope measurer of the measured altitude if necessary
+                DoRaycasts(slopeMeasurer, info);
+
+                // Predict the next altitude for each of the scanning cameras,
+                // and return the data from the camera with the smallest altitude
+                AltitudeData? min = null;
+                for (int i = 0; i < _bottomCameras.Count; i++)
+                {
+                    AltitudeData? cameraData = PredictAltitudeForCamera(i, info);
+
+                    if (cameraData.HasValue && (!min.HasValue || min.Value.altitude > cameraData.Value.altitude))
+                        min = cameraData;
+                }
+
+                return min;
+            }
+
+            private void DoRaycasts(SlopeMeasurer slopeMeasurer, Info info)
+            {
+                for (int i = 0; i < _bottomCameras.Count; i++)
+                {
+                    ScanningCamera sc = _bottomCameras[i];
+
+                    // Do a raycast if we haven't raycasted recently and the camera's distance limit is high enough
+                    float timeSinceLastRaycast = info.time - (_previousRaycasts[i]?.time ?? float.MinValue); // TODO Stagger raycasts from cameras
+                    double rayDistLimit = sc._cameraBlock.RaycastDistanceLimit;
+                    if (timeSinceLastRaycast >= GROUND_RAYCAST_INTERVAL && (rayDistLimit >= MAX_DOWNWARDS_RAYCAST || rayDistLimit < 0))
+                    {
+                        // Do the raycast!
+                        MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(sc._cameraBlock.GetPosition() + info.gravityDown * (float) MAX_DOWNWARDS_RAYCAST);
+                        if (!raycast.IsEmpty())
+                        {
+                            // The raycast hit something!
+                            // Calculate the altitude, based on the result of the raycast
+                            float altitude = Vector3.Distance(sc._cameraBlock.WorldMatrix.Translation, raycast.HitPosition.Value);
+
+                            // Calculate the ground height
+                            Vector3 pos = sc._cameraBlock.GetPosition();
+                            Vector3 sealevelPos = GetSealevelPos(info, pos);
+                            float groundHeight = GetGroundHeight(info, sealevelPos, pos, altitude);
+
+                            // Store the calculated altitude data
+                            _previousRaycasts[i] = new AltitudeData(altitude, groundHeight, info.time);
+
+                            // Tell slope measurer about this result (but only for ONE of the cameras, it would be confused if we kept giving it
+                            // results from multiple)
+                            if (i == 0)
+                            {
+                                slopeMeasurer.PushMeasurements(groundHeight, sealevelPos, info.time, true);
+                            }
+                        }
+                    }
+                }
+            }
+
+            private AltitudeData? PredictAltitudeForCamera(int scIndex, Info info)
+            {
+                // Ensure that we have at least one recent raycast
+                if (_previousRaycasts[scIndex].HasValue) {
+                    AltitudeData data = _previousRaycasts[scIndex].Value;
+                    float t = info.time - data.time;
+
+                    // Predict the current altitude and ground height
+                    float alt = data.altitude;
+                    float gnd = data.groundHeight;
+
+                    // Factor vertical speed and slope into the prediction
+                    // *Note: both vertical speed and slope are 100% accurate in this case. Vertical speed can obviously be measured precisely
+                    // and slope is only updated using actual raycast results (not estimated results)
+                    float expectedAltitudeChange = (info.verticalVelocity - info.slopeRate) * t;
+                    alt += expectedAltitudeChange;
+                    gnd += expectedAltitudeChange;
+
+                    return new AltitudeData(alt, gnd, info.time);
+                }
+
+                // No recent raycasts, there is nothing to go off of
+                return null;
+            }
+
+            private float GetGroundHeight(Info info, Vector3 sealevelPos, Vector3 pos, float altitude)
+            {
+                float heightAboveSeaLevel = Vector3.Dot(info.gravityUp, pos - sealevelPos);
+                return heightAboveSeaLevel - altitude;
+            }
+
+            private Vector3 GetSealevelPos(Info info, Vector3 pos)
+            {
+                Vector3 delta = pos - info.planetCenter;
+                delta.Normalize();
+                return info.planetCenter + delta * info.sealevelRadius;
+            }
+        }
+
+        class ElevationAltitudeProvider : AltitudeProvider
+        {
+            public AltitudeData? GetAltitude(SlopeMeasurer slopeMeasurer, Info info)
+            {
+                double altitude;
+                double sealevel;
+                if (info.cockpit.TryGetPlanetElevation(MyPlanetElevation.Surface, out altitude) &&
+                    info.cockpit.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out sealevel))
+                    return new AltitudeData((float) altitude, (float) (sealevel - altitude), info.time);
+                else
+                    return null;
             }
         }
 
@@ -1012,76 +1102,6 @@ namespace IngameScript
         {
             // The camera block this scanning camera uses
             public IMyCameraBlock _cameraBlock;
-
-            // The most recent raycast performed
-            public RaycastResult? _recentRaycast;
-
-            // The second-most recent raycast performed
-            public RaycastResult? _previousRaycast;
-
-            // Based on the results from recent raycasts, estimates the distance that we'd get if we did a raycast right now.
-            public Altitude? ExtrapolateRaycast(double currentTime, float seadist, float verticalVelocity, Vector3 gravityUp, double slopeRate)
-            {
-                // Ensure that we have at least one recent raycast
-                if (_recentRaycast != null && (currentTime - _recentRaycast.Value._time) < GROUND_RAYCAST_EXPIRY)
-                {
-                    if (_previousRaycast != null && (currentTime - _previousRaycast.Value._time) < 2 * GROUND_RAYCAST_EXPIRY)
-                    {
-                        RaycastResult r1 = _previousRaycast.Value;
-                        RaycastResult r2 = _recentRaycast.Value;
-                        double a = r2._time - r1._time;
-                        double b = currentTime - r2._time;
-
-                        //Perform linear interpolation???
-                        //Could this be better??
-                        // Update: NO, it is not
-                        // It is far worse
-                        // an abomination
-                        // it must be destroyed!
-                        //double t = Clamp(0.0, 1.0, (currentTime - r2._time) / (r2._time / r1._time));
-                        //return new Altitude(Lerp(r1._distance, r2._distance, t),
-                        //    Lerp(r1._distFromPlanetCenter, r2._distFromPlanetCenter, t),
-                        //    GetRefPos(Lerp(r1._position, r2._position, (float) t), Lerp(r1._planetCenter, r2._planetCenter, (float) t), seadist));
-
-                        // We have two recent raycasts. Perform a linear extrapolation of data to estimate current raycast value
-                        double alt = r2._distance + (r2._distance - r1._distance) / a * b;
-                        double dst = r2._distFromPlanetCenter + (r2._distFromPlanetCenter - r1._distFromPlanetCenter) / a * b;
-                        Vector3 pos = r2._position + (r2._position - r1._position) / (float) a * (float) b;
-                        Vector3 pc = r2._planetCenter + (r2._planetCenter - r1._planetCenter) / (float) a * (float) b;
-
-                        // Extrapolation sucks guys lets not actually do  that
-                        alt = r2._distance;
-                        dst = r2._distFromPlanetCenter;
-                        pos = r2._position;
-                        pc = r2._planetCenter;
-
-                        // Factor vertical speed and slope into the prediction
-                        double expectedAltitudeChange = (verticalVelocity - slopeRate) * b;
-                        alt += expectedAltitudeChange;
-                        dst += expectedAltitudeChange;
-                        pos += gravityUp * (float) expectedAltitudeChange;
-
-                        return new Altitude(alt, dst, GetRefPos(pos, pc, seadist));
-                    }
-                    else
-                    {
-                        // There is only one recent raycast, so just return the most recent one (no extrapolation possible)
-                        RaycastResult r = _recentRaycast.Value;
-                        return new Altitude(r._distance, r._distFromPlanetCenter, GetRefPos(r._position, r._planetCenter, seadist));
-                    }
-                }
-
-                // No recent raycasts, there is nothing to go off of
-                return null;
-            }
-
-            public double WIP_GetSlope()
-            {
-                // TODO: Calculate slpe by looking at recent raycast values  not by more complicated means!
-                return -1.0;
-            }
-
-            private Vector3 GetRefPos(Vector3 pos, Vector3 pc, float seadist) => pc + Vector3.Normalize(pos - pc) * seadist;
         }
 
         struct ValueTuple<A, B>
