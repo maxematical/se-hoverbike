@@ -94,7 +94,7 @@ namespace IngameScript
         // more processing-heavy and could cause lag. (Note: the interval at which cameras can raycast may also be limited by
         // the server's settings)
         // Default value: 0.125
-        private const double GROUND_RAYCAST_INTERVAL = 0.125;
+        private const double GROUND_RAYCAST_INTERVAL = 0.25;
 
         // (Advanced) How long, in seconds, the result of a raycast will be used before it is considered outdated and not used
         // anymore. In this case the script will fall back to the default altitude algorithms. See GROUND_RAYCAST_INTERVAL for more
@@ -306,6 +306,12 @@ namespace IngameScript
             float shipRoll = ToDeg((float) Math.Acos(shipRollDot)) * Math.Sign(Vector3.Dot(gravityDown, shipRight));
             float shipPitch = ToDeg((float) Math.Acos(shipPitchDot)) * -Math.Sign(Vector3.Dot(gravityDown, shipForward));
 
+            // Determine components of velocity relative to various axes
+            float verticalVelocity = Vector3.Dot(velocity, -gravityDown);
+            Vector3 horizontalVelocity = velocity + verticalVelocity * gravityDown;
+            float forwardVelocity = Vector3.Dot(velocity, groundForward);
+            float sidewaysVelocity = Vector3.Dot(velocity, groundRight);
+
             // Determine maximum acceleration that can be provided by the thrusters
             float thrustAlignment = Vector3.Dot(shipDown, gravityDown);
             float minAccel = -gravity;
@@ -320,7 +326,7 @@ namespace IngameScript
             float safeAccel = Math.Max(maxAccel - (float) SAFE_FALLING, 4f);
 
             // Determine current altitude
-            var altitudeTuple = CheckAltitude(gravityDown, shipDown);
+            var altitudeTuple = CheckAltitude(gravityDown, shipDown, velocity, horizontalVelocity.Length());
             Altitude? raycastedAltitude = altitudeTuple.a;
             Altitude? elevationAltitude = altitudeTuple.b;
             Altitude? maybeAltitude = raycastedAltitude ?? elevationAltitude; // prefer raycasted altitude, fall back to elevation altitude
@@ -340,14 +346,8 @@ namespace IngameScript
                 groundHeight;
             _leastGroundHeightUpdateTime = _totalTimeRan;
 
-            // Determine components of velocity relative to various axes
-            float verticalVelocity = Vector3.Dot(velocity, -gravityDown);
-            Vector3 horizontalVelocity = velocity + verticalVelocity * gravityDown;
-            float forwardVelocity = Vector3.Dot(velocity, groundForward);
-            float sidewaysVelocity = Vector3.Dot(velocity, groundRight);
-
             // Measure the slope of the ground by seeing how fast ground height is changing
-            Vector3D groundHeightPos = _cockpit.GetPosition();
+            Vector3D groundHeightPos = maybeAltitude.Value._referencePos;
             if (Vector3.DistanceSquared(groundHeightPos, _lastGroundHeightPos) >= (GROUND_HEIGHT_SAMPLE_RATE * GROUND_HEIGHT_SAMPLE_RATE) ||
                 (_totalTimeRan - _lastGroundHeightTime) >= GROUND_HEIGHT_SAMPLE_INTERVAL)
             {
@@ -364,7 +364,7 @@ namespace IngameScript
                 }
                 else
                 {
-                    _measuredSlope = 0f;
+                    _measuredSlope = 100f;
                 }
             }
             DoScanAhead(velocity, gravityDown, altitude);
@@ -398,83 +398,17 @@ namespace IngameScript
             // OK, we know everything we need to know to start doing the autopilot thingy
             // Determine desired net vertical acceleration (we'll take gravity into account later)
             float accel;
-            bool isManualInput = false;
-            if (Math.Abs(_cockpit.MoveIndicator.Y) > 0.1f)
+            bool isManualInput;
             {
-                // Handle when the user presses Space or C
-                float clampedInput = 0.5f + 0.5f * _cockpit.MoveIndicator.Y;
-                if (clampedInput < -1) clampedInput = -1f;
-                if (clampedInput > 1) clampedInput = 1f;
-
-                accel = minAccel + (maxAccel - minAccel) * clampedInput;
-                isManualInput = true;
-            }
-            else if (_landing)
-            {
-                // Handle when we want to land
-                // We want to accelerate such that the current vertical velocity is equal to the constant -LANDING_VELOCITY
-                // Note: thrusters will automatically cut off when altitude is less than LANDING_ALTITUDE_THRESHOLD
-                accel = (float) (-LANDING_VELOCITY - slopeVelocity);
-                if (accel < minAccel) accel = minAccel;
-                if (accel > maxAccel) accel = maxAccel;
-            }
-            else if (altitude < minAltitude)
-            {
-                // Handle when we are too low (below the minimum altitude)
-                if (slopeVelocity > 0)
-                {
-                    // We are already moving up
-                    // Predict at what altitude we will stop if we start thrusting down now
-                    // If we will stop over the minimum altitude, then it's time to stop
-                    double y = EstimateStoppingDistance(altitude, slopeVelocity, minAccel);
-                    accel = (y > minAltitude) ? minAccel : maxAccel;
-                }
-                else
-                {
-                    // We are moving down right now -- this is BAD!!!! We might crash!
-                    accel = maxAccel;
-                }
-            }
-            else if (altitude > maxAltitude)
-            {
-                // Handle when we are too high (above the maximum altitude)
-                if (slopeVelocity < 0)
-                {
-                    // We are moving down
-                    // Predict at what altitude we will stop if:
-                    //   a) we start braking with a smaller acceleration (safeAccel)
-                    //   b) we start braking with a larger acceleration (maxAccel)
-                    double y1 = EstimateStoppingDistance(altitude, slopeVelocity, safeAccel);
-                    double y2 = EstimateStoppingDistance(altitude, slopeVelocity, maxAccel);
-
-                    // If we won't stop at the desired altitude even when using maximum thrust, this could be bad. Put thrusters to the max!
-                    if (y2 < maxAltitude)       accel = maxAccel;
-                    // If we won't stop at the desired altitude if using safe thrust, this is probably still ok but use safe thrust
-                    else if (y1 < maxAltitude)  accel = safeAccel;
-                    // Otherwise we can keep falling
-                    else                        accel = minAccel;
-                }
-                else
-                {
-                    // We are moving up
-                    // We don't want to move up, we're too high
-                    accel = minAccel;
-                }
-            }
-            else
-            {
-                // We are just between the minimum and maximum altitude
-                // Try to accelerate such that y-velocity will be zero
-                accel = Clamp(minAccel, maxAccel, -5f * verticalVelocity);
+                var result = CalculateDesiredAccel(altitude, minAltitude, maxAltitude,
+                    slopeVelocity,
+                    minAccel, safeAccel, maxAccel);
+                accel = result.a;
+                isManualInput = result.b;
             }
 
             // Count non-damaged thrusters
-            int numFunctionalThrusters = 0;
-            foreach (IMyThrust thrust in _thrusters)
-            {
-                if (thrust.IsFunctional)
-                    numFunctionalThrusters++;
-            }
+            int numFunctionalThrusters = _thrusters.Count(x => x.IsFunctional);
 
             // Set the thrust override to achieve the desired acceleration
             float totalThrust = (accel + gravity) * mass;
@@ -529,10 +463,11 @@ namespace IngameScript
                         "none";
 
                 // Debug slope
-                line3 = "m" + _measuredSlope.ToString("F3");
-                //line3 += "\ns" + slopeVelocity.ToString("F2");
-                line3 += "\na" + altitude.ToString("F2");
-                line3 += "\ng" + groundHeight.ToString("F2");
+                line3 = "s" + _slope.ToString("F3");
+                //line3 += "\ng" + groundHeight.ToString("F1");
+                //line3 += "\n" + (distFromPlanetCenter - altitude).ToString("F1");
+                //line3 += "\nv" + slopeVelocity.ToString("F3");
+                line3 += "\na" + altitude.ToString("F1");
 
                 // Write text onto display
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
@@ -570,17 +505,128 @@ namespace IngameScript
             }
         }
 
+        ValueTuple<float, bool> CalculateDesiredAccel(double altitude, double minAltitude, double maxAltitude,
+            double slopeVelocity,
+            float minAccel, float safeAccel, float maxAccel)
+        {
+            if (Math.Abs(_cockpit.MoveIndicator.Y) > 0.1f)
+            {
+                // Handle when the user presses Space or C
+                float clampedInput = 0.5f + 0.5f * _cockpit.MoveIndicator.Y;
+                if (clampedInput < -1) clampedInput = -1f;
+                if (clampedInput > 1) clampedInput = 1f;
+
+                float accel = minAccel + (maxAccel - minAccel) * clampedInput;
+                return new ValueTuple<float, bool>(accel, true);
+            }
+            else if (_landing)
+            {
+                // Handle when we want to land
+                // We want to accelerate such that the current vertical velocity is equal to the constant -LANDING_VELOCITY
+                // Note: thrusters will automatically cut off when altitude is less than LANDING_ALTITUDE_THRESHOLD
+                float accel = Clamp(minAccel, maxAccel, (float) (-LANDING_VELOCITY - slopeVelocity));
+                return new ValueTuple<float, bool>(accel, false);
+            }
+            else if (altitude < minAltitude)
+            {
+                // Handle when we are too low (below the minimum altitude)
+                float accel;
+                if (slopeVelocity > 0)
+                {
+                    // We are already moving up
+                    // Predict at what altitude we will stop if we start thrusting down now
+                    // If we will stop over the minimum altitude, then it's time to stop
+                    double y = EstimateStoppingDistance(altitude, slopeVelocity, minAccel);
+                    accel = (y > minAltitude) ? minAccel : maxAccel;
+                }
+                else
+                {
+                    // We are moving down right now -- this is BAD!!!! We might crash!
+                    accel = maxAccel;
+                }
+                return new ValueTuple<float, bool>(accel, false);
+            }
+            else if (altitude > maxAltitude)
+            {
+                // Handle when we are too high (above the maximum altitude)
+                float accel;
+                if (slopeVelocity < 0)
+                {
+                    // We are moving down
+                    // Predict at what altitude we will stop if:
+                    //   a) we start braking with a smaller acceleration (safeAccel)
+                    //   b) we start braking with a larger acceleration (maxAccel)
+                    double y1 = EstimateStoppingDistance(altitude, slopeVelocity, safeAccel);
+                    double y2 = EstimateStoppingDistance(altitude, slopeVelocity, maxAccel);
+
+                    // If we won't stop at the desired altitude even when using maximum thrust, this could be bad. Put thrusters to the max!
+                    if (y2 < maxAltitude) accel = maxAccel;
+                    // If we won't stop at the desired altitude if using safe thrust, this is probably still ok but use safe thrust
+                    else if (y1 < maxAltitude) accel = safeAccel;
+                    // Otherwise we can keep falling
+                    else accel = minAccel;
+                }
+                else
+                {
+                    // We are moving up
+                    // We don't want to move up, we're too high
+                    accel = minAccel;
+                }
+                return new ValueTuple<float, bool>(accel, false);
+            }
+            else
+            {
+                // We are just between the minimum and maximum altitude
+                // Try to accelerate such that y-velocity will be zero
+                float accel = Clamp(minAccel, maxAccel, -5f * (float) slopeVelocity);
+                return new ValueTuple<float, bool>(accel, false);
+            }
+        }
+
         // Checks the current altitude of the ship using both raycasts (if available) and planet elevation (if available).
         // Returns a tuple where the first member is the raycasted altitude, and the second member is the elevation-determined altitude.
-        ValueTuple<Altitude?, Altitude?> CheckAltitude(Vector3 gravDown, Vector3 shipDown)
+        ValueTuple<Altitude?, Altitude?> CheckAltitude(Vector3 gravityDown, Vector3 shipDown, Vector3 velocity, float horizontalSpeed)
         {
             // Check the planet center (needed for both camera-based altitude and elevation-based altitude)
             Vector3D planetCenter;
             if (!_cockpit.TryGetPlanetPosition(out planetCenter))
                 return new ValueTuple<Altitude?, Altitude?>(null, null);
 
+            // Calculate distance from center of planet to sea level
+            double sealevel;
+            _cockpit.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out sealevel);
+            float seadist = Vector3.Distance(planetCenter, GetApproxCenterOfMass() - gravityDown * (float) sealevel);
+
             // Ideally, check altitude using camera raycast
             // Go through each bottom camera and check if we haven't raycasted recently; if so, do another raycast
+            RaycastBottomCameras(gravityDown, planetCenter);
+
+            // 1.) Calculate the altitude using bottom cameras
+            Altitude? raycastedAltitude = null;
+            foreach (ScanningCamera sc in _bottomCameras)
+            {
+                Altitude? result = sc.ExtrapolateRaycast(_totalTimeRan, seadist, Vector3.Dot(velocity, -gravityDown), -gravityDown,
+                    _slope * horizontalSpeed);
+                if (result != null && (raycastedAltitude == null || result.Value._altitude < raycastedAltitude.Value._altitude))
+                    raycastedAltitude = result;
+            }
+
+            // 2.) Calculate the altitude using elevation
+            Altitude? elevationAltitude = null;
+            double elevationAltitude2;
+            double elevationSealevel;
+            if (_cockpit.TryGetPlanetElevation(MyPlanetElevation.Surface, out elevationAltitude2) &&
+                _cockpit.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out elevationSealevel))
+                elevationAltitude = new Altitude(elevationAltitude2,
+                    Vector3.Distance(GetApproxCenterOfMass(), planetCenter),
+                    GetApproxCenterOfMass() - gravityDown * (float) elevationSealevel);
+
+            // Return the results from both altitude checks
+            return new ValueTuple<Altitude?, Altitude?>(raycastedAltitude, elevationAltitude);
+        }
+
+        void RaycastBottomCameras(Vector3 gravityDown, Vector3 planetCenter)
+        {
             foreach (ScanningCamera sc in _bottomCameras)
             {
                 // Do a raycast if we haven't raycasted recently and the camera's distance limit is high enough
@@ -589,42 +635,25 @@ namespace IngameScript
                 if (timeSinceLastRaycast >= GROUND_RAYCAST_INTERVAL && (rayDistLimit >= MAX_DOWNWARDS_RAYCAST || rayDistLimit < 0))
                 {
                     // Do the raycast!
-                    MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(sc._cameraBlock.GetPosition() + gravDown * (float) MAX_DOWNWARDS_RAYCAST);
+                    MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(sc._cameraBlock.GetPosition() + gravityDown * (float) MAX_DOWNWARDS_RAYCAST);
                     if (!raycast.IsEmpty())
                     {
                         // Got the result, store it into the ScanningCamera
-                        float verticalDistFromCockpit = Vector3.Dot(-gravDown, sc._cameraBlock.GetPosition() - GetCenterOfMass()) * (RAYCAST_RELATIVE_TO_COM ? 1f : 0f);
+                        float verticalDistFromCockpit = Vector3.Dot(-gravityDown, sc._cameraBlock.GetPosition() - GetApproxCenterOfMass()) * (RAYCAST_RELATIVE_TO_COM ? 1f : 0f);
                         RaycastResult result = new RaycastResult();
                         result._distance = Vector3.Distance(sc._cameraBlock.WorldMatrix.Translation, raycast.HitPosition.Value) - verticalDistFromCockpit;
                         result._time = _totalTimeRan;
                         result._distFromPlanetCenter = Vector3.Distance(planetCenter, sc._cameraBlock.GetPosition());
+                        result._position = sc._cameraBlock.GetPosition();
+                        result._planetCenter = planetCenter;
 
                         sc._previousRaycast = sc._recentRaycast;
                         sc._recentRaycast = result;
                     }
                 }
             }
-
-            // Calculate the altitude using recently raycasted cameras.
-            Altitude? raycastedAltitude = null;
-            foreach (ScanningCamera sc in _bottomCameras)
-            {
-                Altitude? result = sc.ExtrapolateRaycast(_totalTimeRan);
-                if (result != null && (raycastedAltitude == null || result.Value._altitude < raycastedAltitude.Value._altitude))
-                    raycastedAltitude = result;
-            }
-
-            // Calculate the altitude using cockpit altitude
-            // (This will detect terrain but not blocks or other ships under the hoverbike)
-            Altitude? elevationAltitude = null;
-            double elevationAltitude2;
-            if (_cockpit.TryGetPlanetElevation(MyPlanetElevation.Surface, out elevationAltitude2))
-                elevationAltitude = new Altitude(elevationAltitude2, Vector3.Distance(GetCenterOfMass(), planetCenter));
-
-            // Return the results from both altitude checks
-            return new ValueTuple<Altitude?, Altitude?>(raycastedAltitude, elevationAltitude);
         }
-
+        
         void DoScanAhead(Vector3 velocity, Vector3 gravityDown, double altitude)
         {
             // Scan 1.5s ahead
@@ -768,14 +797,6 @@ namespace IngameScript
                     cam.EnableRaycast = true;
                     sc._cameraBlock = cam;
 
-                    Base6Directions.Direction camUp = cam.Orientation.Up;
-                    CameraRotation rotation;
-                    if (camUp == _cockpit.Orientation.Up) rotation = CameraRotation.NORMAL;
-                    else if (camUp == Base6Directions.GetOppositeDirection(_cockpit.Orientation.Left)) rotation = CameraRotation.CLOCKWISE;
-                    else if (camUp == _cockpit.Orientation.Left) rotation = CameraRotation.COUNTERCLOCKWISE;
-                    else rotation = CameraRotation.UPSIDEDOWN;
-                    sc._rotation = rotation;
-
                     _forwardCameras.Add(sc);
                 }
                 // Detect downwards-facing cameras
@@ -786,28 +807,9 @@ namespace IngameScript
                     cam.EnableRaycast = true;
                     sc._cameraBlock = cam;
 
-                    Base6Directions.Direction camUp = cam.Orientation.Up;
-                    CameraRotation rotation;
-                    if (camUp == _cockpit.Orientation.Forward) rotation = CameraRotation.NORMAL;
-                    else if (camUp == Base6Directions.GetOppositeDirection(_cockpit.Orientation.Left)) rotation = CameraRotation.CLOCKWISE;
-                    else if (camUp == _cockpit.Orientation.Left) rotation = CameraRotation.COUNTERCLOCKWISE;
-                    else rotation = CameraRotation.UPSIDEDOWN;
-                    sc._rotation = rotation;
-
                     _bottomCameras.Add(sc);
                     _bottomCamerasMaxAngle = Math.Min(_bottomCamerasMaxAngle, cam.RaycastConeLimit);
                 }
-            }
-
-            if (_forwardCameras.Count > 0)
-            {
-                ScanningCamera sc = _forwardCameras[0];
-                float raycastPitch = 0f;
-                float raycastYaw = 30f;
-                sc.TransformRotation(ref raycastPitch, ref raycastYaw);
-
-                MyDetectedEntityInfo raycast = sc._cameraBlock.Raycast(30.0, raycastPitch, raycastYaw);
-                Echo("Raycast result: " + raycast.Name);
             }
 
             ComputeLocalCenterOfMass();
@@ -894,7 +896,7 @@ namespace IngameScript
         }
 
         // Calculates the center of mass in world coordinates.
-        Vector3 GetCenterOfMass() =>
+        Vector3 GetApproxCenterOfMass() =>
             Vector3.Transform(Me.CubeGrid.GridSize * _localCenterOfMass, Me.CubeGrid.WorldMatrix);
 
         float GetBlockMass(IMySlimBlock block)
@@ -953,23 +955,27 @@ namespace IngameScript
             return display;
         }
 
-        float ToDeg(float rad) => rad * 57.2957795131f;
+        static float ToDeg(float rad) => rad * 57.2957795131f;
 
-        float ToRad(float deg) => deg / 57.2957795131f;
+        static float ToRad(float deg) => deg / 57.2957795131f;
 
-        float Clamp(float a, float b, float x) => Math.Max(a, Math.Min(b, x));
+        static float Clamp(float a, float b, float x) => Math.Max(a, Math.Min(b, x));
 
-        double Clamp(double a, double b, double x) => Math.Max(a, Math.Min(b, x));
+        static double Clamp(double a, double b, double x) => Math.Max(a, Math.Min(b, x));
+
+        static double Lerp(double a, double b, double t) => a + (b - a) * Clamp(0.0, 1.0, t);
+
+        static Vector3 Lerp(Vector3 a, Vector3 b, float t) => a + (b - a) * Clamp(0f, 1f, t);
 
         new void Echo(object obj)
         {
             base.Echo(obj != null ? obj.ToString() : "null");
         }
 
-        string FormatGPS(Vector3 position, string gpsName) =>
+        static string FormatGPS(Vector3 position, string gpsName) =>
             $"GPS:{gpsName}:{position.X.ToString("F5")}:{position.Y.ToString("F5")}:{position.Z.ToString("F5")}:";
 
-        string FormatGPS(Vector3D position, string gpsName) =>
+        static string FormatGPS(Vector3D position, string gpsName) =>
             $"GPS:{gpsName}:{position.X.ToString("F5")}:{position.Y.ToString("F5")}:{position.Z.ToString("F5")}:";
 
         // Describes the successful (hit) result of a raycast.
@@ -981,17 +987,24 @@ namespace IngameScript
             public double _time;
             // The distance the camera was from the planet center when it performed the raycast
             public double _distFromPlanetCenter;
+            // The position the camera was at when it performed the raycast
+            public Vector3 _position;
+            // The position of the planet center when performing the raycast
+            public Vector3 _planetCenter;
         }
 
         struct Altitude
         {
             public double _altitude;
             public double _distFromPlanetCenter;
+            // Reference position for where the altitude was taken. These will always be the same distance from the planet center
+            public Vector3 _referencePos;
 
-            public Altitude(double altitude, double groundHeight)
+            public Altitude(double altitude, double groundHeight, Vector3 referencePos)
             {
                 _altitude = altitude;
                 _distFromPlanetCenter = groundHeight;
+                _referencePos = referencePos;
             }
         }
 
@@ -1000,9 +1013,6 @@ namespace IngameScript
             // The camera block this scanning camera uses
             public IMyCameraBlock _cameraBlock;
 
-            // The rotation of this camera relative to the cockpit, from the perspective of looking forward in the cockpit
-            public CameraRotation _rotation;
-
             // The most recent raycast performed
             public RaycastResult? _recentRaycast;
 
@@ -1010,26 +1020,54 @@ namespace IngameScript
             public RaycastResult? _previousRaycast;
 
             // Based on the results from recent raycasts, estimates the distance that we'd get if we did a raycast right now.
-            public Altitude? ExtrapolateRaycast(double currentTime)
+            public Altitude? ExtrapolateRaycast(double currentTime, float seadist, float verticalVelocity, Vector3 gravityUp, double slopeRate)
             {
                 // Ensure that we have at least one recent raycast
                 if (_recentRaycast != null && (currentTime - _recentRaycast.Value._time) < GROUND_RAYCAST_EXPIRY)
                 {
                     if (_previousRaycast != null && (currentTime - _previousRaycast.Value._time) < 2 * GROUND_RAYCAST_EXPIRY)
                     {
-                        // We have two recent raycasts. Perform a linear extrapolation of data to estimate current raycast value
                         RaycastResult r1 = _previousRaycast.Value;
                         RaycastResult r2 = _recentRaycast.Value;
-                        double am = (r2._distance - r1._distance) / (r2._time - r1._time);
-                        double dm = (r2._distFromPlanetCenter - r1._distFromPlanetCenter) / (r2._time - r1._time);
-                        double alt = r2._distance + am * (currentTime - r2._time);
-                        double dst = r2._distFromPlanetCenter + dm * (currentTime - r2._time);
-                        return new Altitude(alt, dst);
+                        double a = r2._time - r1._time;
+                        double b = currentTime - r2._time;
+
+                        //Perform linear interpolation???
+                        //Could this be better??
+                        // Update: NO, it is not
+                        // It is far worse
+                        // an abomination
+                        // it must be destroyed!
+                        //double t = Clamp(0.0, 1.0, (currentTime - r2._time) / (r2._time / r1._time));
+                        //return new Altitude(Lerp(r1._distance, r2._distance, t),
+                        //    Lerp(r1._distFromPlanetCenter, r2._distFromPlanetCenter, t),
+                        //    GetRefPos(Lerp(r1._position, r2._position, (float) t), Lerp(r1._planetCenter, r2._planetCenter, (float) t), seadist));
+
+                        // We have two recent raycasts. Perform a linear extrapolation of data to estimate current raycast value
+                        double alt = r2._distance + (r2._distance - r1._distance) / a * b;
+                        double dst = r2._distFromPlanetCenter + (r2._distFromPlanetCenter - r1._distFromPlanetCenter) / a * b;
+                        Vector3 pos = r2._position + (r2._position - r1._position) / (float) a * (float) b;
+                        Vector3 pc = r2._planetCenter + (r2._planetCenter - r1._planetCenter) / (float) a * (float) b;
+
+                        // Extrapolation sucks guys lets not actually do  that
+                        alt = r2._distance;
+                        dst = r2._distFromPlanetCenter;
+                        pos = r2._position;
+                        pc = r2._planetCenter;
+
+                        // Factor vertical speed and slope into the prediction
+                        double expectedAltitudeChange = (verticalVelocity - slopeRate) * b;
+                        alt += expectedAltitudeChange;
+                        dst += expectedAltitudeChange;
+                        pos += gravityUp * (float) expectedAltitudeChange;
+
+                        return new Altitude(alt, dst, GetRefPos(pos, pc, seadist));
                     }
                     else
                     {
                         // There is only one recent raycast, so just return the most recent one (no extrapolation possible)
-                        return new Altitude(_recentRaycast.Value._distance, _recentRaycast.Value._distFromPlanetCenter);
+                        RaycastResult r = _recentRaycast.Value;
+                        return new Altitude(r._distance, r._distFromPlanetCenter, GetRefPos(r._position, r._planetCenter, seadist));
                     }
                 }
 
@@ -1037,35 +1075,13 @@ namespace IngameScript
                 return null;
             }
 
-            public void TransformRotation(ref float pitch, ref float yaw)
+            public double WIP_GetSlope()
             {
-                float oldPitch = pitch;
-                switch (_rotation)
-                {
-                    case CameraRotation.NORMAL:
-                        break;
-                    case CameraRotation.CLOCKWISE:
-                        pitch = yaw;
-                        yaw = -oldPitch;
-                        break;
-                    case CameraRotation.UPSIDEDOWN:
-                        pitch = -pitch;
-                        yaw = -yaw;
-                        break;
-                    case CameraRotation.COUNTERCLOCKWISE:
-                        pitch = -yaw;
-                        yaw = oldPitch;
-                        break;
-                }
+                // TODO: Calculate slpe by looking at recent raycast values  not by more complicated means!
+                return -1.0;
             }
-        }
 
-        enum CameraRotation
-        {
-            NORMAL,
-            CLOCKWISE,
-            UPSIDEDOWN,
-            COUNTERCLOCKWISE
+            private Vector3 GetRefPos(Vector3 pos, Vector3 pc, float seadist) => pc + Vector3.Normalize(pos - pc) * seadist;
         }
 
         struct ValueTuple<A, B>
