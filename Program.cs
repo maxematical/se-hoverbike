@@ -722,8 +722,9 @@ namespace IngameScript
 
             ComputeLocalCenterOfMass();
 
+            _info = new Info();
             _slopeMeasurer = new SlopeMeasurer();
-            _raycastAltitudeProvider = new RaycastAltitudeProvider(_bottomCameras);
+            _raycastAltitudeProvider = new RaycastAltitudeProvider(_bottomCameras, _cockpit.Orientation.Forward);
             _elevationAltitudeProvider = new ElevationAltitudeProvider();
 
             return true;
@@ -920,7 +921,7 @@ namespace IngameScript
                         (distanceBetweenSamples >= SLOPE_SAMPLE_RATE) ||
                         ((time - lastUpdateTime) >= SLOPE_SAMPLE_INTERVAL);
 
-                    if (shouldUpdateSlope)
+                    if (shouldUpdateSlope && distanceBetweenSamples >= 0.1f)
                     {
                         _Slope = (groundHeight - lastGroundHeight.Value) / distanceBetweenSamples;
                         lastGroundHeight = groundHeight;
@@ -976,16 +977,29 @@ namespace IngameScript
         {
             private List<ScanningCamera> _bottomCameras;
             private AltitudeData?[] _previousRaycasts;
+            private int _frontmostCameraIndex;
 
-            public RaycastAltitudeProvider(List<ScanningCamera> bottomCameras)
+            public RaycastAltitudeProvider(List<ScanningCamera> bottomCameras, Base6Directions.Direction cockpitForward)
             {
-                Reset(bottomCameras);
+                Reset(bottomCameras, cockpitForward);
             }
 
-            void Reset(List<ScanningCamera> bottomCameras)
+            void Reset(List<ScanningCamera> bottomCameras, Base6Directions.Direction cockpitForward)
             {
                 _bottomCameras = bottomCameras;
                 _previousRaycasts = new AltitudeData?[bottomCameras.Count];
+
+                _frontmostCameraIndex = -1;
+                float frontmostCameraCoordinate = float.MinValue;
+                for (int i = 0; i < bottomCameras.Count; i++)
+                {
+                    float coord = GetCoordinate(bottomCameras[i]._cameraBlock, cockpitForward);
+                    if (coord > frontmostCameraCoordinate)
+                    {
+                        _frontmostCameraIndex = i;
+                        frontmostCameraCoordinate = coord;
+                    }
+                }
             }
 
             public AltitudeData? GetAltitude(SlopeMeasurer slopeMeasurer, Info info)
@@ -1036,7 +1050,7 @@ namespace IngameScript
 
                             // Tell slope measurer about this result (but only for ONE of the cameras, it would be confused if we kept giving it
                             // results from multiple)
-                            if (i == 0)
+                            if (i == _frontmostCameraIndex)
                             {
                                 slopeMeasurer.PushMeasurements(groundHeight, sealevelPos, info.time, true);
                             }
@@ -1070,18 +1084,21 @@ namespace IngameScript
                 return null;
             }
 
-            private float GetGroundHeight(Info info, Vector3 sealevelPos, Vector3 pos, float altitude)
+            private static float GetGroundHeight(Info info, Vector3 sealevelPos, Vector3 pos, float altitude)
             {
                 float heightAboveSeaLevel = Vector3.Dot(info.gravityUp, pos - sealevelPos);
                 return heightAboveSeaLevel - altitude;
             }
 
-            private Vector3 GetSealevelPos(Info info, Vector3 pos)
+            private static Vector3 GetSealevelPos(Info info, Vector3 pos)
             {
                 Vector3 delta = pos - info.planetCenter;
                 delta.Normalize();
                 return info.planetCenter + delta * info.sealevelRadius;
             }
+
+            private static float GetCoordinate(IMyTerminalBlock block, Base6Directions.Direction dir) =>
+                Vector3.Dot(block.Position * block.CubeGrid.GridSize, Base6Directions.GetVector(dir));
         }
 
         class ElevationAltitudeProvider : AltitudeProvider
@@ -1092,9 +1109,16 @@ namespace IngameScript
                 double sealevel;
                 if (info.cockpit.TryGetPlanetElevation(MyPlanetElevation.Surface, out altitude) &&
                     info.cockpit.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out sealevel))
-                    return new AltitudeData((float) altitude, (float) (sealevel - altitude), info.time);
+                {
+                    float groundHeight = (float) (sealevel - altitude);
+                    Vector3 sealevelPos = info.cockpit.GetPosition() + info.gravityDown * (float) sealevel;
+                    slopeMeasurer.PushMeasurements(groundHeight, sealevelPos, info.time);
+                    return new AltitudeData((float) altitude, groundHeight, info.time);
+                }
                 else
+                {
                     return null;
+                }
             }
         }
 
