@@ -125,7 +125,9 @@ namespace IngameScript
         // them by a developer
         // ==============================================================================
 
-        // no debug variables
+        // If this is true, slope and altitude data will be shown on the LCD screen. Reduce text size and disable
+        // AUTOMATICALLY_SET_LCD_PARAMS to see it
+        private const bool DEBUG_SLOPE_AND_ALTITUDE = false;
 
         // ==========================================================================
         // Don't change anything below this line (unless you want to edit the script)
@@ -150,20 +152,11 @@ namespace IngameScript
         private bool _landing;
         private bool _isHangarMode;
 
-        //// Variables related to obtaining ground height through checking altitude & sea level
-        //// (Would have been used for computing slope of the ground)
-        //private Vector3 _lastGroundHeightPos;
-        //private double _lastGroundHeight;
-        //private double _lastGroundHeightTime;
-
+        // Flight subsystems
         private Info _info;
         private SlopeMeasurer _slopeMeasurer;
         private AltitudeProvider _raycastAltitudeProvider;
         private AltitudeProvider _elevationAltitudeProvider;
-
-        //// Last forward scan
-        //private float _raycastedSlope;
-        //private double _lastSlopeScanTime;
 
         // Computed center mass
         private Vector3 _localCenterOfMass;
@@ -440,12 +433,10 @@ namespace IngameScript
                     line3 = stoppingDistance.ToString("F0");
                 }
 
-                // Debug slope
-                line3 = "s" + _slopeMeasurer._Slope.ToString("F3");
-                //line3 += "\ng" + groundHeight.ToString("F1");
-                //line3 += "\n" + (distFromPlanetCenter - altitude).ToString("F1");
-                //line3 += "\nv" + slopeVelocity.ToString("F3");
-                line3 += "\na" + altitude.ToString("F1");
+                // Debug slope and altitude
+                if (DEBUG_SLOPE_AND_ALTITUDE)
+                    line3 = "s" + _slopeMeasurer._Slope.ToString("F3") +
+                        "\na" + altitude.ToString("F1");
 
                 // Write text onto display
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
@@ -977,7 +968,8 @@ namespace IngameScript
         {
             private List<ScanningCamera> _bottomCameras;
             private AltitudeData?[] _previousRaycasts;
-            private int _frontmostCameraIndex;
+            private int? _frontmostCameraIndex;
+            private Base6Directions.Direction _cockpitForward;
 
             public RaycastAltitudeProvider(List<ScanningCamera> bottomCameras, Base6Directions.Direction cockpitForward)
             {
@@ -988,18 +980,8 @@ namespace IngameScript
             {
                 _bottomCameras = bottomCameras;
                 _previousRaycasts = new AltitudeData?[bottomCameras.Count];
-
-                _frontmostCameraIndex = -1;
-                float frontmostCameraCoordinate = float.MinValue;
-                for (int i = 0; i < bottomCameras.Count; i++)
-                {
-                    float coord = GetCoordinate(bottomCameras[i]._cameraBlock, cockpitForward);
-                    if (coord > frontmostCameraCoordinate)
-                    {
-                        _frontmostCameraIndex = i;
-                        frontmostCameraCoordinate = coord;
-                    }
-                }
+                _frontmostCameraIndex = CalcFrontmostCameraIndex(bottomCameras, cockpitForward);
+                _cockpitForward = cockpitForward;
             }
 
             public AltitudeData? GetAltitude(SlopeMeasurer slopeMeasurer, Info info)
@@ -1050,9 +1032,14 @@ namespace IngameScript
 
                             // Tell slope measurer about this result (but only for ONE of the cameras, it would be confused if we kept giving it
                             // results from multiple)
-                            if (i == _frontmostCameraIndex)
+                            int? idx = CheckFrontmostCameraIndex();
+                            if (i == idx)
                             {
                                 slopeMeasurer.PushMeasurements(groundHeight, sealevelPos, info.time, true);
+                            }
+                            else if (idx == null)
+                            {
+                                slopeMeasurer.Reset();
                             }
                         }
                     }
@@ -1065,6 +1052,10 @@ namespace IngameScript
                 if (_previousRaycasts[scIndex].HasValue) {
                     AltitudeData data = _previousRaycasts[scIndex].Value;
                     float t = info.time - data.time;
+
+                    // Ensure that the data is recent enough
+                    if (t >= GROUND_RAYCAST_EXPIRY)
+                        return null;
 
                     // Predict the current altitude and ground height
                     float alt = data.altitude;
@@ -1084,6 +1075,14 @@ namespace IngameScript
                 return null;
             }
 
+            private int? CheckFrontmostCameraIndex()
+            {
+                if (!_frontmostCameraIndex.HasValue || !_bottomCameras[_frontmostCameraIndex.Value]._cameraBlock.IsFunctional)
+                    _frontmostCameraIndex = CalcFrontmostCameraIndex(_bottomCameras, _cockpitForward);
+                
+                return _frontmostCameraIndex;
+            }
+
             private static float GetGroundHeight(Info info, Vector3 sealevelPos, Vector3 pos, float altitude)
             {
                 float heightAboveSeaLevel = Vector3.Dot(info.gravityUp, pos - sealevelPos);
@@ -1095,6 +1094,27 @@ namespace IngameScript
                 Vector3 delta = pos - info.planetCenter;
                 delta.Normalize();
                 return info.planetCenter + delta * info.sealevelRadius;
+            }
+
+            private static int? CalcFrontmostCameraIndex(List<ScanningCamera> bottomCameras,
+                Base6Directions.Direction cockpitForward)
+            {
+                int? frontmostCameraIndex = null;
+                float frontmostCameraCoordinate = float.MinValue;
+                for (int i = 0; i < bottomCameras.Count; i++)
+                {
+                    if (!bottomCameras[i]._cameraBlock.IsFunctional)
+                        continue;
+
+                    float coord = GetCoordinate(bottomCameras[i]._cameraBlock, cockpitForward);
+                    if (coord > frontmostCameraCoordinate)
+                    {
+                        frontmostCameraIndex = i;
+                        frontmostCameraCoordinate = coord;
+                    }
+                }
+
+                return frontmostCameraIndex;
             }
 
             private static float GetCoordinate(IMyTerminalBlock block, Base6Directions.Direction dir) =>
