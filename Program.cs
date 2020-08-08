@@ -254,16 +254,16 @@ namespace IngameScript
                 _landing = false;
                 _isHangarMode = true;
             }
-            if (argument == "higher" || argument == "lower" || argument == "checkoffset")
+            if (argument == "higher" || argument == "lower" || argument == "checkoffset" || argument == "offset0")
             {
-                double offsetMul;
-                if (argument == "higher") offsetMul = 1.0;
-                else if (argument == "lower") offsetMul = -1.0;
-                else offsetMul = 0.0;
+                if (argument == "higher")
+                    _altitudeOffset += ALTITUDE_OFFSET_INCREMENT;
+                else if (argument == "lower")
+                    _altitudeOffset -= ALTITUDE_OFFSET_INCREMENT;
+                else if (argument == "offset0")
+                    _altitudeOffset = 0.0;
 
-                _altitudeOffset += ALTITUDE_OFFSET_INCREMENT * offsetMul;
                 _altitudeOffset = Clamp(0f, MAX_ALTITUDE_OFFSET, _altitudeOffset);
-
                 _temporaryMessage = new LcdMessage($"+{_altitudeOffset.ToString("F1")}m", (float) _totalTimeRan, 2.0f);
             }
         }
