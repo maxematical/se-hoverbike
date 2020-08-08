@@ -1,4 +1,5 @@
 ﻿1.1
+- add 
 - fix unable to stop using LCD panel once the script start using it
 - "land" toggles landing mode instead of always switching it on
 - better handling when one of the thrusters gets damaged
