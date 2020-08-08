@@ -79,6 +79,14 @@ namespace IngameScript
         // Default value: 5.0
         private const double DISPLAY_STOPDIST_THRESHOLD_SPEED = 5.0;
 
+        // How much the target altitude of the ship should change when running the script with "Higher" or "Lower", in meters.
+        // Default value: 2.0
+        private const double ALTITUDE_OFFSET_INCREMENT = 2.0;
+
+        // The maximum offset to target altitude that can be obtained by running "Higher" or "Lower", in meters.
+        // Default value: 8.0
+        private const double MAX_ALTITUDE_OFFSET = 8.0;
+
         // (Advanced) To calculate the slope of the ground, the script will automatically check the height of the ground every
         // few meters. This value means how many meters the script should wait before checking the height of the ground again.
         // Default value: 5.0
@@ -113,12 +121,6 @@ namespace IngameScript
         // Default value: 3.0
         private const double SAFE_FALLING = 3.0;
 
-        // (Advanced) If this constant is true, then the script will attempt to adjust the altitude obtained using downward-facing
-        // raycast cameras to be more similar to the altitude obtained via the cockpit. This feature is probably not necessary, but
-        // it is still left here in case it turns out to be useful in the future. Turn on DEBUG_RAYCAST_DIFF to see the effect.
-        // Default value: false
-        //private const bool RAYCAST_RELATIVE_TO_COM = false; Doesn't work anymore
-
         // ==============================================================================
         // DEBUG CONFIGURATION
         // These are likely not useful unless you're editing the script or told to change
@@ -152,6 +154,11 @@ namespace IngameScript
         private bool _landing;
         private bool _isHangarMode;
 
+        private double _altitudeOffset;
+
+        // Display variables
+        private LcdMessage? _temporaryMessage;
+
         // Flight subsystems
         private Info _info;
         private SlopeMeasurer _slopeMeasurer;
@@ -180,8 +187,8 @@ namespace IngameScript
                 if (_initialized && _controlling)
                 {
                     DoUpdate();
-                    _totalTimeRan += Runtime.TimeSinceLastRun.TotalSeconds;
                 }
+                _totalTimeRan += Runtime.TimeSinceLastRun.TotalSeconds;
                 return;
             }
 
@@ -246,6 +253,18 @@ namespace IngameScript
                 _controlling = true;
                 _landing = false;
                 _isHangarMode = true;
+            }
+            if (argument == "higher" || argument == "lower" || argument == "checkoffset")
+            {
+                double offsetMul;
+                if (argument == "higher") offsetMul = 1.0;
+                else if (argument == "lower") offsetMul = -1.0;
+                else offsetMul = 0.0;
+
+                _altitudeOffset += ALTITUDE_OFFSET_INCREMENT * offsetMul;
+                _altitudeOffset = Clamp(0f, MAX_ALTITUDE_OFFSET, _altitudeOffset);
+
+                _temporaryMessage = new LcdMessage($"+{_altitudeOffset.ToString("F1")}m", (float) _totalTimeRan, 2.0f);
             }
         }
 
@@ -363,6 +382,8 @@ namespace IngameScript
             // Determine the desired minumum/maximum altitude based on the current control settings
             double minAltitude = _isHangarMode ? HANGAR_MODE_MIN_ALTITUDE : NORMAL_MIN_ALTITUDE;
             double maxAltitude = _isHangarMode ? HANGAR_MODE_MAX_ALTITUDE : NORMAL_MAX_ALTITUDE;
+            minAltitude += _altitudeOffset;
+            maxAltitude += _altitudeOffset;
 
             // OK, we know everything we need to know to start doing the autopilot thingy
             // Determine desired net vertical acceleration (we'll take gravity into account later)
@@ -410,7 +431,11 @@ namespace IngameScript
 
                 // Determine third line to write
                 string line3 = "";
-                if (_landing)
+                if (_temporaryMessage.HasValue && (_totalTimeRan - _temporaryMessage.Value.initTime) < _temporaryMessage.Value.duration)
+                {
+                    line3 = _temporaryMessage.Value.message;
+                }
+                else if (_landing)
                 {
                     line3 = "LAND";
                 }
@@ -1066,6 +1091,20 @@ namespace IngameScript
         {
             // The camera block this scanning camera uses
             public IMyCameraBlock _cameraBlock;
+        }
+
+        struct LcdMessage
+        {
+            public string message;
+            public float initTime;
+            public float duration;
+
+            public LcdMessage(string message, float initTime, float duration)
+            {
+                this.message = message;
+                this.initTime = initTime;
+                this.duration = duration;
+            }
         }
 
         struct ValueTuple<A, B>
