@@ -918,6 +918,11 @@ namespace IngameScript
                         lastGroundHeight = groundHeight;
                         lastSeaLevelPos = seaLevelPos;
                         lastUpdateTime = time;
+
+                        if (_Slope < 0)
+                        {
+                            _Slope *= 0.5f;
+                        }
                     }
                 }
                 else
