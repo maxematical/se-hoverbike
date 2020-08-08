@@ -753,6 +753,14 @@ namespace IngameScript
                     _landing = (lines[2][1] == 'y');
                     _isHangarMode = (lines[2][2] == 'y');
                 }
+
+                // Load altitude offset
+                if (lines.Length >= 4)
+                {
+                    bool success = double.TryParse(lines[3], out _altitudeOffset);
+                    if (!success)
+                        _altitudeOffset = 0f;
+                }
             }
             else
             {
@@ -774,7 +782,7 @@ namespace IngameScript
             state += (_landing ? 'y' : 'n');
             state += (_isHangarMode ? 'y' : 'n');
 
-            Me.CustomData = VERSION + '\n' + _blockGroupName + '\n' + state;
+            Me.CustomData = VERSION + '\n' + _blockGroupName + '\n' + state + '\n' + _altitudeOffset;
         }
 
         void ResetDisplays()
