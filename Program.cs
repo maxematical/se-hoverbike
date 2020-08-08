@@ -36,16 +36,6 @@ namespace IngameScript
         // Default value: 7.0
         private const double NORMAL_MAX_ALTITUDE = 7.0;
 
-        // The minimum altitude the script will try to maintain while in hangar mode, in meters. Hangar mode can be activated by
-        // running the argument "Hangar" and is turned off by running "Auto".
-        // Default value: 1.0
-        private const double HANGAR_MODE_MIN_ALTITUDE = 1.0;
-
-        // The maximum altitude the script will try to maintain while in hangar mode, in meters. Hangar mode can be activated by
-        // running the argument "Hangar" and is turned off by running "Auto".
-        // Default value: 1.5
-        private const double HANGAR_MODE_MAX_ALTITUDE = 1.5;
-
         // If this is true, the script display on the programmable block's LCD screen, as well as any other LCDs in use. The
         // programmable block does not need to be added to the Hoverbike group.
         // Default value: false
@@ -54,6 +44,17 @@ namespace IngameScript
         // If this is true, the script will display its output on one of the cockpit's LCD screen as well. Similar to DISPLAY_ON_PB.
         // Default value: false
         private const bool DISPLAY_ON_COCKPIT = false;
+
+        // Normally, the script will automatically set the parameters of the LCD panel to make sure the text is easily visible.
+        // If this is false it will not do so.
+        // Default value: true
+        private const bool AUTOMATICALLY_SET_LCD_PARAMS = true;
+
+        // The more this value is, the earlier the hoverbike will brake when it's high in the air. When braking early, it will keep
+        // using maximal thrust if necessary, but otherwise will use less thrust to avoid stopping too early. Setting this value to 0
+        // will disable the safe falling feature.
+        // Default value: 3.0
+        private const double SAFE_FALLING = 3.0;
 
         // The vertical speed that the script will try to maintain when landing.
         // Default value: 3.5
@@ -64,20 +65,15 @@ namespace IngameScript
         // Default value: 2.0
         private const double LANDING_ALTITUDE_THRESHOLD = 2.0;
 
-        // Normally, the script will automatically set the parameters of the LCD panel to make sure the text is easily visible.
-        // If this is false it will not do so.
-        // Default value: true
-        private const bool AUTOMATICALLY_SET_LCD_PARAMS = false;//TODO
+        // The minimum altitude the script will try to maintain while in hangar mode, in meters. Hangar mode can be activated by
+        // running the argument "Hangar" and is turned off by running "Auto".
+        // Default value: 1.0
+        private const double HANGAR_MODE_MIN_ALTITUDE = 1.0;
 
-        // When the ship is slowing down and its deceleration at least this value, then the ship's stopping distance will be
-        // displayed on the third line of the LCD panel.
-        // Default value: 2.0
-        private const double DISPLAY_STOPDIST_THRESHOLD_ACCEL = 2.0;
-
-        // When the ship is slowing down and its speed is greater than this value, then the ship's stopping distance will be
-        // displayed on the third line of the LCD panel.
-        // Default value: 5.0
-        private const double DISPLAY_STOPDIST_THRESHOLD_SPEED = 5.0;
+        // The maximum altitude the script will try to maintain while in hangar mode, in meters. Hangar mode can be activated by
+        // running the argument "Hangar" and is turned off by running "Auto".
+        // Default value: 1.5
+        private const double HANGAR_MODE_MAX_ALTITUDE = 1.5;
 
         // How much the target altitude of the ship should change when running the script with "Higher" or "Lower", in meters.
         // Default value: 2.0
@@ -102,7 +98,7 @@ namespace IngameScript
         // more processing-heavy and could cause lag. (Note: the interval at which cameras can raycast may also be limited by
         // the server's settings)
         // Default value: 0.125
-        private const double GROUND_RAYCAST_INTERVAL = 0.25;
+        private const double GROUND_RAYCAST_INTERVAL = 0.125;
 
         // (Advanced) How long, in seconds, the result of a raycast will be used before it is considered outdated and not used
         // anymore. In this case the script will fall back to the default altitude algorithms. See GROUND_RAYCAST_INTERVAL for more
@@ -115,11 +111,15 @@ namespace IngameScript
         // Default value: 150.0
         private const double MAX_DOWNWARDS_RAYCAST = 150.0;
 
-        // The more this value is, the earlier the hoverbike will brake when it's high in the air. When braking early, it will keep
-        // using maximal thrust if necessary, but otherwise will use less thrust to avoid stopping too early. Setting this value to 0
-        // will disable the safe falling feature.
-        // Default value: 3.0
-        private const double SAFE_FALLING = 3.0;
+        // When the ship is slowing down and its deceleration at least this value, then the ship's stopping distance will be
+        // displayed on the third line of the LCD panel.
+        // Default value: 2.0
+        private const double DISPLAY_STOPDIST_THRESHOLD_ACCEL = 2.0;
+
+        // When the ship is slowing down and its speed is greater than this value, then the ship's stopping distance will be
+        // displayed on the third line of the LCD panel.
+        // Default value: 5.0
+        private const double DISPLAY_STOPDIST_THRESHOLD_SPEED = 5.0;
 
         // ==============================================================================
         // DEBUG CONFIGURATION
@@ -135,7 +135,7 @@ namespace IngameScript
         // Don't change anything below this line (unless you want to edit the script)
         // ==========================================================================
 
-        private const string VERSION = "1.1_dev";
+        private const string VERSION = "1.1";
         private const string DEFAULT_BLOCK_GROUP = "Hoverbike";
 
         private string _blockGroupName;
@@ -245,7 +245,7 @@ namespace IngameScript
             }
             if (argument == "land")
             {
-                _landing = !_controlling ? true : !_landing;
+                _landing = true;
                 _controlling = true;
             }
             if (argument == "hangar")
@@ -257,11 +257,13 @@ namespace IngameScript
             if (argument == "higher" || argument == "lower" || argument == "checkoffset" || argument == "offset0")
             {
                 if (argument == "higher")
-                    _altitudeOffset += ALTITUDE_OFFSET_INCREMENT;
+                    _altitudeOffset += ALTITUDE_OFFSET_INCREMENT;   
                 else if (argument == "lower")
                     _altitudeOffset -= ALTITUDE_OFFSET_INCREMENT;
                 else if (argument == "offset0")
                     _altitudeOffset = 0.0;
+
+                float duration = (argument == "checkoffset") ? 5.0f : 2.0f;
 
                 _altitudeOffset = Clamp(0f, MAX_ALTITUDE_OFFSET, _altitudeOffset);
                 _temporaryMessage = new LcdMessage($"+{_altitudeOffset.ToString("F1")}m", (float) _totalTimeRan, 2.0f);
@@ -753,13 +755,21 @@ namespace IngameScript
                     _landing = (lines[2][1] == 'y');
                     _isHangarMode = (lines[2][2] == 'y');
                 }
+                else
+                {
+                    _controlling = false;
+                    _landing = false;
+                    _isHangarMode = false;
+                }
 
                 // Load altitude offset
-                if (lines.Length >= 4)
+                if (lines.Length >= 4 && double.TryParse(lines[3], out _altitudeOffset))
                 {
-                    bool success = double.TryParse(lines[3], out _altitudeOffset);
-                    if (!success)
-                        _altitudeOffset = 0f;
+                    _altitudeOffset = Clamp(0.0, MAX_ALTITUDE_OFFSET, _altitudeOffset);
+                }
+                else
+                {
+                    _altitudeOffset = 0.0;
                 }
             }
             else

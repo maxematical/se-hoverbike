@@ -1,16 +1,22 @@
-﻿maaax's Hoverbike Script v1.0
+﻿maaax's Hoverbike Script v1.1
+=============================
+Now with grid detection! Add downward facing cameras to hover over other stations and ships.
+  ** (Make sure you add the cameras to your Hoverbike group and re-run "Init")
 
 
 Setup instructions:
 
 1) Make a block group called "Hoverbike". The group should contain the cockpit/remote control, the thrusters to be controlled by
-   this script, and optionally an LCD panel to display onto.
+   this script, and optionally: a) an LCD panel to display onto, and/or b) downward-facing camera(s) that allow the ship to hover
+   over other grids.
 
 2) Initialize the script by running it with the argument "Init".
 
 3) Now, you can run the script with the argument "Auto" to start the hoverbike, "Stop" to stop the script, or "Land" to slowly land.
 
-4) (Optional) change the block group that the script uses by running the argument "BlockGroup <Group Name>".
+4) (Optional) adjust altitude your ship will try to hover at by scrolling down and changing NORMAL_MIN_ALTITUDE and NORMAL_MAX_ALTITUDE
+
+5) (Optional) change the block group that the script uses by running the argument "BlockGroup <Group Name>".
 
 
 Flight instructions:
@@ -18,21 +24,29 @@ Flight instructions:
  - You control the hoverbike only by rotating the ship. To go forward, pitch down. To go backwards, pitch up. To turn, roll by
    pressing Q and E.
 
- - The hoverbike usually can detect smaller hills and bumps, but you can still press Space or C in emergency situations to thrust
-   up or down, respectively.
+ - The hoverbike usually can detect smaller hills and bumps, but if necessary you can do two things: run the script with arguments
+   "raise" or "lower", which will raise and lower the hoverbike's target altitude, respectively; or press Space or C to use manual
+   controls.
 
  - If you have an LCD, the first number on the screen is your forward speed. The second number your speed to the right. (If you're
    going to the left, that number will be negative.)
 
 
-All arguments to script (capitalization doesn't matter):
+All arguments to script (capitalization doesn't matter, except when changing the block group):
 
  - Init: sets up the script for the first time. You should also run this after changing the blocks in the block group.
  - Auto: turns on the script and starts hovering.
  - Stop: turns off the script and goes back to regular space engineers controls
  - Land: slowly lowers the ship to the ground. Recommended to only use this if you are already going fairly slow!
+
  - BlockGroup: shows the name of the block group that the script is using.
  - BlockGroup <GroupName>: sets the block group that the script is using to the given value.
+
+ - Hangar: sets the ship in a mode where it hovers lower to the ground. Useful for if you are in a hangar
+ - Raise: raises the ship's target altitude, useful if you're coming up to a hill or a bump
+ - Lower: lowers the ship's target altitude
+ - CheckOffset: displays how much the ship's target altitude has been offsetted by running "Raise" or "Lower"
+ - Offset0: resets the ship's target altitude to its normal value, this is the same as running "Lower" many times
 
 
 Copyright 2020 maaaxaltan
