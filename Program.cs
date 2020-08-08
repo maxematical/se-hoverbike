@@ -158,10 +158,6 @@ namespace IngameScript
         private AltitudeProvider _raycastAltitudeProvider;
         private AltitudeProvider _elevationAltitudeProvider;
 
-        // Computed center mass
-        private Vector3 _localCenterOfMass;
-        private float _comPhysicalMass;
-
         private double _totalTimeRan;
 
         public Program()
@@ -261,10 +257,6 @@ namespace IngameScript
 
             MyShipVelocities myVelocity = _cockpit.GetShipVelocities();
             Vector3 velocity = myVelocity.LinearVelocity;
-
-            // Recalculate center of mass if necessary
-            if (mass != _comPhysicalMass)
-                ComputeLocalCenterOfMass();
 
             // Determine gravity vector
             float gravity = (float)_cockpit.GetNaturalGravity().Length();
@@ -711,89 +703,12 @@ namespace IngameScript
                 }
             }
 
-            ComputeLocalCenterOfMass();
-
             _info = new Info();
             _slopeMeasurer = new SlopeMeasurer();
             _raycastAltitudeProvider = new RaycastAltitudeProvider(_bottomCameras, _cockpit.Orientation.Forward);
             _elevationAltitudeProvider = new ElevationAltitudeProvider();
 
             return true;
-        }
-
-        // Computes the grid-local center of mass of this ship and stores it in _localCenterOfMass.
-        // For some reason, this algorithm is slightly flawed, calculates the wrong total mass (as compared to PhysicalMass), and the
-        // calculated center of mass is slightly off. However, it is better than nothing.
-        void ComputeLocalCenterOfMass()
-        {
-            IMyCubeGrid grid = Me.CubeGrid;
-
-            Vector3I min = grid.Min;
-            Vector3I max = grid.Max;
-
-            // Determine the total mass of the grid
-            float totalMass = 0f;
-            for (int z = min.Z; z <= max.Z; z++)
-            {
-                for (int y = min.Y; y <= max.Y; y++)
-                {
-                    for (int x = min.X; x <= max.X; x++)
-                    {
-                        IMySlimBlock block = grid.GetCubeBlock(new Vector3I(x, y, z));
-                        if (block != null)
-                            totalMass += GetBlockMass(block);
-                    }
-                }
-            }
-
-            // Determine center of mass
-            Vector3 centerOfMass = new Vector3();
-            for (int z = min.Z; z <= max.Z; z++)
-            {
-                for (int y = min.Y; y <= max.Y; y++)
-                {
-                    for (int x = min.X; x <= max.X; x++)
-                    {
-                        IMySlimBlock block = grid.GetCubeBlock(new Vector3I(x, y, z));
-                        if (block != null)
-                        {
-                            centerOfMass += new Vector3(x, y, z) * GetBlockMass(block) / totalMass;
-                        }
-                    }
-                }
-            }
-
-            // Store center of mass
-            _localCenterOfMass = centerOfMass;
-            _comPhysicalMass = _cockpit.CalculateShipMass().PhysicalMass;
-        }
-
-        // Calculates the center of mass in world coordinates.
-        Vector3 GetApproxCenterOfMass() =>
-            Vector3.Transform(Me.CubeGrid.GridSize * _localCenterOfMass, Me.CubeGrid.WorldMatrix);
-
-        float GetBlockMass(IMySlimBlock block)
-        {
-            float mass = block.FatBlock?.Mass ?? block.Mass;
-            if (block is IMyEntity)
-            {
-                IMyEntity entity = (IMyEntity) block;
-                for (int i = 0; i < entity.InventoryCount; i++)
-                    mass += (float) entity.GetInventory(i).CurrentMass;
-                if (entity.HasInventory)
-                    mass += (float) entity.GetInventory().CurrentMass;
-            }
-            return mass / GetBlockVolume(block);
-        }
-
-        int GetBlockVolume(IMySlimBlock block)
-        {
-            if (block.FatBlock != null)
-            {
-                Vector3I dimensions = block.FatBlock.Max - block.FatBlock.Min + Vector3I.One;
-                return dimensions.X * dimensions.Y * dimensions.Z;
-            }
-            return 1;
         }
 
         void LoadCustomData()
