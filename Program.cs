@@ -58,7 +58,7 @@ namespace IngameScript
 
         // The vertical speed that the script will try to maintain when landing.
         // Default value: 3.5
-        private const double LANDING_VELOCITY = 3.5f;
+        private const double LANDING_VELOCITY = 3.5;
 
         // If the ship is landing, the script will automatically turn off all the thrusters when the ship's altitude is at or
         // below this number.
@@ -135,7 +135,7 @@ namespace IngameScript
         // Don't change anything below this line (unless you want to edit the script)
         // ==========================================================================
 
-        private const string VERSION = "1.1";
+        private const string VERSION = "1.2_dev";
         private const string DEFAULT_BLOCK_GROUP = "Hoverbike";
 
         private string _blockGroupName;
@@ -147,6 +147,7 @@ namespace IngameScript
         private List<ScanningCamera> _forwardCameras;
         private List<ScanningCamera> _bottomCameras;
         private float _bottomCamerasMaxAngle;
+        private List<IMyGyro> _gyros;
         private List<IMyTextSurface> _displays;
 
         // Control variables (public to save state between script runs)
@@ -189,6 +190,7 @@ namespace IngameScript
                     DoUpdate();
                 }
                 _totalTimeRan += Runtime.TimeSinceLastRun.TotalSeconds;
+                Echo("Time taken for last run: " + Runtime.LastRunTimeMs.ToString("F2") + "ms");
                 return;
             }
 
@@ -278,6 +280,12 @@ namespace IngameScript
 
             MyShipVelocities myVelocity = _cockpit.GetShipVelocities();
             Vector3 velocity = myVelocity.LinearVelocity;
+
+            // https://forum.keenswh.com/threads/7386434/#post-1286997268
+            // X = pitch (positive up)
+            // Y = yaw (positive left)
+            // Z = roll (positive left)
+            Vector3 angularVelocity = Vector3.Transform(myVelocity.AngularVelocity, Matrix.Transpose(_cockpit.WorldMatrix.GetOrientation()));
 
             // Determine gravity vector
             float gravity = (float)_cockpit.GetNaturalGravity().Length();
@@ -391,12 +399,65 @@ namespace IngameScript
             // Determine desired net vertical acceleration (we'll take gravity into account later)
             float accel;
             bool isManualInput;
+            string xxxx = "";
             {
                 var result = CalculateDesiredAccel(altitude, minAltitude, maxAltitude,
                     verticalVelocity - _info.slopeRate,
                     minAccel, safeAccel, maxAccel);
                 accel = result.a;
                 isManualInput = result.b;
+
+                if(isManualInput)
+                {
+                    accel = 0f;
+
+                    double desiredRoll = 0.0;
+                    double desiredPitch = 0.0;
+
+                    if (Math.Abs(sidewaysVelocity) > 0.1)
+                    {
+                        double r1 = 20.0;
+                        double t1 = 3.0;
+                        double g = gravity;
+
+                        double v = Math.Max(sidewaysVelocity, -5.35036);
+                        double t = Math.Sqrt(Math.Abs(  2 * t1 * Math.Abs(v) / (g * Math.Tan(r1 * Math.PI / 180.0)))   );
+                        if (!double.IsNaN(t))
+                            desiredRoll = (r1 / t1) * t;
+                        desiredRoll *= -Math.Sign(sidewaysVelocity);
+
+                        xxxx = sidewaysVelocity.ToString("F1") + '\n' +
+                            desiredRoll.ToString("F1") + '\n' +
+                            shipRoll.ToString("F1") + '\n' +
+                            (g * Math.Tan(r1 * Math.PI / 180.0)).ToString("F1");
+                    }
+                    if (Math.Abs(forwardVelocity) > 0.1)
+                    {
+                        double r1 = 20.0;
+                        double t1 = 3.0;
+                        double g = gravity;
+
+                        double v = Math.Max(forwardVelocity, -5.35036);
+                        double t = Math.Sqrt(Math.Abs(2 * t1 * Math.Abs(v) / (g * Math.Tan(r1 * Math.PI / 180.0))));
+                        if (!double.IsNaN(t))
+                            desiredPitch = (r1 / t1) * t;
+                        desiredPitch *= Math.Sign(forwardVelocity);
+
+                        xxxx = forwardVelocity.ToString("F1") + '\n' +
+                            desiredPitch.ToString("F1") + '\n' +
+                            shipPitch.ToString("F1") + '\n' +
+                            (g * Math.Tan(r1 * Math.PI / 180.0)).ToString("F1");
+                    }
+
+                    double rollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / 10.0));
+                    double pitchSpeed = Math.Sign(desiredPitch - shipPitch) * Math.Min(1.0, Math.Abs((desiredPitch - shipPitch) / 10.0));
+
+                    ApplyGyroOverride(pitchSpeed, 0.0, rollSpeed, _gyros, _cockpit);
+                }
+                else
+                {
+                    RemoveGyroOverride();
+                }
             }
 
             // Count non-damaged thrusters
@@ -460,6 +521,15 @@ namespace IngameScript
                 // Write text onto display
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
+                // Debug
+                {
+                    Vector3 vec = new Vector3(shipPitch, 0, shipRoll);
+                    //display.WriteText(vec.X.ToString("F2") + "\n" +
+                    //    vec.Y.ToString("F2") + "\n" +
+                    //    vec.Z.ToString("F2"));
+                    display.WriteText(xxxx);
+                }
+
                 // If we would have normally used raycasted altitude, but the ship is tilted so far that we need to use elevation
                 // altitude instead, this can result in inaccuracies (e.g. didn't detect the grid we are hovering over)
                 // Warn the user if we would normally use raycasted altitude but can't/almost can't because we are tilted too far.
@@ -490,6 +560,9 @@ namespace IngameScript
                 else if (sidewaysVelocity < -2f && !_isHangarMode) display.BackgroundColor = new Color(0, (int) Math.Min(100, -sidewaysVelocity * 10f), 0);
                 // Otherwise, set background to black (transparent)
                 else display.BackgroundColor = Color.Black;
+
+
+                display.FontColor = new Color(100, 100, 255);
             }
         }
 
@@ -730,6 +803,10 @@ namespace IngameScript
                 }
             }
 
+            // Initialize gyros
+            _gyros = new List<IMyGyro>();
+            group.GetBlocksOfType(_gyros);
+
             _info = new Info();
             _slopeMeasurer = new SlopeMeasurer();
             _raycastAltitudeProvider = new RaycastAltitudeProvider(_bottomCameras, _cockpit.Orientation.Forward);
@@ -839,6 +916,33 @@ namespace IngameScript
 
         static string FormatGPS(Vector3D position, string gpsName) =>
             $"GPS:{gpsName}:{position.X.ToString("F5")}:{position.Y.ToString("F5")}:{position.Z.ToString("F5")}:";
+
+        //Whip's ApplyGyroOverride Method v9 - 8/19/17
+        static void ApplyGyroOverride(double pitch_speed, double yaw_speed, double roll_speed, List<IMyGyro> gyro_list, IMyTerminalBlock reference)
+        {
+            var rotationVec = new Vector3D(-pitch_speed, yaw_speed, roll_speed); //because keen does some weird stuff with signs 
+            var shipMatrix = reference.WorldMatrix;
+            var relativeRotationVec = Vector3D.TransformNormal(rotationVec, shipMatrix);
+
+            foreach (var thisGyro in gyro_list)
+            {
+                var gyroMatrix = thisGyro.WorldMatrix;
+                var transformedRotationVec = Vector3D.TransformNormal(relativeRotationVec, Matrix.Transpose(gyroMatrix));
+
+                thisGyro.Pitch = (float) transformedRotationVec.X;
+                thisGyro.Yaw = (float) transformedRotationVec.Y;
+                thisGyro.Roll = (float) transformedRotationVec.Z;
+                thisGyro.GyroOverride = true;
+            }
+        }
+
+        void RemoveGyroOverride()
+        {
+            foreach (IMyGyro gyro in _gyros)
+            {
+                gyro.GyroOverride = false;
+            }
+        }
 
         class SlopeMeasurer
         {

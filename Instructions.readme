@@ -1,4 +1,4 @@
-﻿maaax's Hoverbike Script v1.1
+﻿maaax's Hoverbike Script v1.2 Development
 =============================
 Now with grid detection! Add downward facing cameras to hover over other stations and ships.
   ** (Make sure you add the cameras to your Hoverbike group and re-run "Init")
