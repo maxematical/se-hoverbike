@@ -175,7 +175,7 @@ namespace IngameScript
             LoadCustomData();
             Init();
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
-            _lut = new RotationLut(20.0, 3.0, 0.01, Echo);
+            _lut = new RotationLut(20.0, 3.0, 0.005, Echo);
         }
 
         public void Save()
@@ -402,7 +402,7 @@ namespace IngameScript
             // Determine desired net vertical acceleration (we'll take gravity into account later)
             float accel;
             bool isManualInput;
-            string xxxx = "";
+            string xxxx = $"{sidewaysVelocity.ToString("F3")}\n{forwardVelocity.ToString("F3")}";
             {
                 var result = CalculateDesiredAccel(altitude, minAltitude, maxAltitude,
                     verticalVelocity - _info.slopeRate,
@@ -412,50 +412,50 @@ namespace IngameScript
 
                 if(isManualInput)
                 {
-                    accel = 0f;
+                     accel = 0f;
 
                     double desiredRoll = 0.0;
                     double desiredPitch = 0.0;
 
-                    if (Math.Abs(sidewaysVelocity) > 0.1)
+                    if (Math.Abs(sidewaysVelocity) > 0.01)
                     {
-                        double r1 = 20.0;
+                        double r1 = 10.0;
                         double t1 = 3.0;
                         double g = gravity;
 
-                        double v = Math.Max(sidewaysVelocity, -5.35036);
+                        double v = Math.Min(Math.Abs(sidewaysVelocity), 2.592007);
                         double t = Math.Sqrt(Math.Abs(2 * t1 * v / (g * Math.Tan(r1 * Math.PI / 180.0))));
                         if (!double.IsNaN(t))
                             desiredRoll = (r1 / t1) * t;
 
 
 
-                        desiredRoll = _lut.GetRotation(Math.Abs(sidewaysVelocity), gravity);
+                        //desiredRoll = _lut.GetRotation(Math.Abs(sidewaysVelocity), gravity);
 
                         desiredRoll *= -Math.Sign(sidewaysVelocity);
 
-                        xxxx = sidewaysVelocity.ToString("F1") + '\n' +
+                        xxxx = sidewaysVelocity.ToString("F2") + '\n' +
                             desiredRoll.ToString("F1") + '\n' +
                             shipRoll.ToString("F1") + '\n' +
                             (g * Math.Tan(r1 * Math.PI / 180.0)).ToString("F1");
                     }
-                    if (Math.Abs(forwardVelocity) > 0.1)
+                    if (Math.Abs(forwardVelocity) > 0.01)
                     {
-                        double r1 = 20.0;
-                        double t1 = 3.0;
+                        double r1 = 10.0;
+                        double t1 = 1.5;
                         double g = gravity;
 
-                        double v = Math.Max(forwardVelocity, -5.35036);
-                        double t = Math.Sqrt(Math.Abs(2 * t1 * Math.Abs(v) / (g * Math.Tan(r1 * Math.PI / 180.0))));
+                        double v = Math.Min(Math.Abs(forwardVelocity), 2.592007);
+                        double t = Math.Sqrt(Math.Abs(2 * t1 * v / (g * Math.Tan(r1 * Math.PI / 180.0))));
                         if (!double.IsNaN(t))
                             desiredPitch = (r1 / t1) * t;
 
 
-                        desiredPitch = _lut.GetRotation(Math.Abs(forwardVelocity), gravity);
+                        //desiredPitch = _lut.GetRotation(Math.Abs(forwardVelocity), gravity);
 
                         desiredPitch *= Math.Sign(forwardVelocity);
 
-                        xxxx = forwardVelocity.ToString("F1") + '\n' +
+                        xxxx = forwardVelocity.ToString("F2") + '\n' +
                             desiredPitch.ToString("F1") + '\n' +
                             shipPitch.ToString("F1") + '\n' +
                             (g * Math.Tan(r1 * Math.PI / 180.0)).ToString("F1");
@@ -1233,23 +1233,21 @@ namespace IngameScript
                 _stepSize = stepSize;
                 _v1 = -1.0;
 
-                double k = Math.Sqrt(2.0 * t1 / Math.Tan(r1 * Math.PI / 180.0));
-                for (int i = 0; i < _lut.Length; i++)
-                {
-                    double v = i * stepSize;
-                    double r = (r1 / t1) * k * Math.Sqrt(v);
-                    _lut[i] = r;
+                //double k = Math.Sqrt(2.0 * t1 / Math.Tan(r1 * Math.PI / 180.0));
+                //for (int i = 0; i < _lut.Length; i++)
+                //{
+                //    double v = i * stepSize;
+                //    double r = (r1 / t1) * k * Math.Sqrt(v);
+                //    _lut[i] = r;
 
-                    if (r > r1)
-                    {
-                        _v1 = v - stepSize;
-                        break;
-                    }
-                }
+                //    if (r > r1)
+                //    {
+                //        _v1 = v - stepSize;
+                //        break;
+                //    }
+                //}
 
-                double[] oldlut = _lut;
-
-                // Integrate velocity
+                // First integration: find end velocity
                 double integratedV = 0.0;
                 for (int i = 0; i < r1 / stepSize; i++)
                 {
@@ -1258,23 +1256,43 @@ namespace IngameScript
                     double dt = stepSize / r1 * t1;
                     integratedV += a * dt;
                 }
-                Echo("Final v Integrated: " + integratedV + ", Final v Estimated: " + _v1);
+                _v1 = integratedV;
 
+                // Second velocity: init lut
+                _lut = new double[(int) Math.Ceiling(_v1 / stepSize)];
+                integratedV = 0;
+                for (int i = 0; i < r1 / stepSize; i++)
+                {
+                    double r = i * stepSize;
+                    double a = /*g*/ Math.Tan(r * Math.PI / 180.0);
+                    double dt = stepSize / r1 * t1;
+                    integratedV += a * dt;
 
+                    int i2 = (int) Math.Floor(integratedV / stepSize);
+                    _lut[i2] = r;
+                }
 
-                _lut = oldlut;
             }
 
             public double GetRotation(double v, double g)
             {
                 int i;
-                if (_v1 < 0 || v < _v1)
-                    i = (int) Math.Floor(v / _stepSize);
+                if ((v / g) < _v1)
+                    i = (int) Math.Floor((v / g) / _stepSize);
                 else
-                    i = (int) Math.Floor(_v1 / _stepSize);
+                    i = _lut.Length - 1;
 
                 double result = _lut[i];
-                return result / Math.Sqrt(g);
+                return result;
+
+                //int i;
+                //if (_v1 < 0 || v < _v1)
+                //    i = (int) Math.Floor(v / _stepSize);
+                //else
+                //    i = (int) Math.Floor(_v1 / _stepSize);
+
+                //double result = _lut[i];
+                //return result / Math.Sqrt(g);
             }
         }
 
