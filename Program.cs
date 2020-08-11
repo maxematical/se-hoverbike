@@ -157,6 +157,8 @@ namespace IngameScript
 
         private double _altitudeOffset;
 
+        private RotationLut _lut;
+
         // Display variables
         private LcdMessage? _temporaryMessage;
 
@@ -173,6 +175,7 @@ namespace IngameScript
             LoadCustomData();
             Init();
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
+            _lut = new RotationLut(20.0, 3.0, 0.01, Echo);
         }
 
         public void Save()
@@ -188,9 +191,9 @@ namespace IngameScript
                 if (_initialized && _controlling)
                 {
                     DoUpdate();
+                    Echo("Time taken for last run: " + Runtime.LastRunTimeMs.ToString("F2") + "ms");
                 }
                 _totalTimeRan += Runtime.TimeSinceLastRun.TotalSeconds;
-                Echo("Time taken for last run: " + Runtime.LastRunTimeMs.ToString("F2") + "ms");
                 return;
             }
 
@@ -421,9 +424,14 @@ namespace IngameScript
                         double g = gravity;
 
                         double v = Math.Max(sidewaysVelocity, -5.35036);
-                        double t = Math.Sqrt(Math.Abs(  2 * t1 * Math.Abs(v) / (g * Math.Tan(r1 * Math.PI / 180.0)))   );
+                        double t = Math.Sqrt(Math.Abs(2 * t1 * v / (g * Math.Tan(r1 * Math.PI / 180.0))));
                         if (!double.IsNaN(t))
                             desiredRoll = (r1 / t1) * t;
+
+
+
+                        desiredRoll = _lut.GetRotation(Math.Abs(sidewaysVelocity), gravity);
+
                         desiredRoll *= -Math.Sign(sidewaysVelocity);
 
                         xxxx = sidewaysVelocity.ToString("F1") + '\n' +
@@ -441,6 +449,10 @@ namespace IngameScript
                         double t = Math.Sqrt(Math.Abs(2 * t1 * Math.Abs(v) / (g * Math.Tan(r1 * Math.PI / 180.0))));
                         if (!double.IsNaN(t))
                             desiredPitch = (r1 / t1) * t;
+
+
+                        desiredPitch = _lut.GetRotation(Math.Abs(forwardVelocity), gravity);
+
                         desiredPitch *= Math.Sign(forwardVelocity);
 
                         xxxx = forwardVelocity.ToString("F1") + '\n' +
@@ -1206,6 +1218,63 @@ namespace IngameScript
                 {
                     return null;
                 }
+            }
+        }
+
+        class RotationLut
+        {
+            private double[] _lut;
+            private double _stepSize;
+            private double _v1;
+
+            public RotationLut(double r1, double t1, double stepSize, Action<string> Echo)
+            {
+                _lut = new double[1000];
+                _stepSize = stepSize;
+                _v1 = -1.0;
+
+                double k = Math.Sqrt(2.0 * t1 / Math.Tan(r1 * Math.PI / 180.0));
+                for (int i = 0; i < _lut.Length; i++)
+                {
+                    double v = i * stepSize;
+                    double r = (r1 / t1) * k * Math.Sqrt(v);
+                    _lut[i] = r;
+
+                    if (r > r1)
+                    {
+                        _v1 = v - stepSize;
+                        break;
+                    }
+                }
+
+                double[] oldlut = _lut;
+
+                // Integrate velocity
+                double integratedV = 0.0;
+                for (int i = 0; i < r1 / stepSize; i++)
+                {
+                    double r = i * stepSize;
+                    double a = /*g*/ Math.Tan(r * Math.PI / 180.0);
+                    double dt = stepSize / r1 * t1;
+                    integratedV += a * dt;
+                }
+                Echo("Final v Integrated: " + integratedV + ", Final v Estimated: " + _v1);
+
+
+
+                _lut = oldlut;
+            }
+
+            public double GetRotation(double v, double g)
+            {
+                int i;
+                if (_v1 < 0 || v < _v1)
+                    i = (int) Math.Floor(v / _stepSize);
+                else
+                    i = (int) Math.Floor(_v1 / _stepSize);
+
+                double result = _lut[i];
+                return result / Math.Sqrt(g);
             }
         }
 
