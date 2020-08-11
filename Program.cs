@@ -175,7 +175,7 @@ namespace IngameScript
             LoadCustomData();
             Init();
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
-            _lut = new RotationLut(20.0, 3.0, 0.005, Echo);
+            _lut = new RotationLut(20.0, 3.0, 0.0025, Echo);
         }
 
         public void Save()
@@ -402,7 +402,6 @@ namespace IngameScript
             // Determine desired net vertical acceleration (we'll take gravity into account later)
             float accel;
             bool isManualInput;
-            string xxxx = $"{sidewaysVelocity.ToString("F3")}\n{forwardVelocity.ToString("F3")}";
             {
                 var result = CalculateDesiredAccel(altitude, minAltitude, maxAltitude,
                     verticalVelocity - _info.slopeRate,
@@ -410,55 +409,43 @@ namespace IngameScript
                 accel = result.a;
                 isManualInput = result.b;
 
-                if(isManualInput)
+                Vector3 input = _cockpit.MoveIndicator;
+
+                if(input.Sum!=0)
                 {
-                     accel = 0f;
+                     //accel = 0f;
+
+                    double dvs = 0.0 - sidewaysVelocity;
+                    double dvf = (10.0 * -input.Z) - forwardVelocity;
 
                     double desiredRoll = 0.0;
                     double desiredPitch = 0.0;
 
-                    if (Math.Abs(sidewaysVelocity) > 0.01)
+                    if (Math.Abs(dvs) > 0.01)
                     {
                         double r1 = 10.0;
                         double t1 = 3.0;
                         double g = gravity;
 
-                        double v = Math.Min(Math.Abs(sidewaysVelocity), 2.592007);
+                        double v = Math.Abs(dvs);
                         double t = Math.Sqrt(Math.Abs(2 * t1 * v / (g * Math.Tan(r1 * Math.PI / 180.0))));
-                        if (!double.IsNaN(t))
-                            desiredRoll = (r1 / t1) * t;
 
-
-
-                        //desiredRoll = _lut.GetRotation(Math.Abs(sidewaysVelocity), gravity);
-
-                        desiredRoll *= -Math.Sign(sidewaysVelocity);
-
-                        xxxx = sidewaysVelocity.ToString("F2") + '\n' +
-                            desiredRoll.ToString("F1") + '\n' +
-                            shipRoll.ToString("F1") + '\n' +
-                            (g * Math.Tan(r1 * Math.PI / 180.0)).ToString("F1");
+                        //desiredRoll = _lut.GetRotation(v, g);
+                        desiredRoll = Math.Min((r1 / t1) * t, 20.0);
+                        desiredRoll *= Math.Sign(dvs);
                     }
-                    if (Math.Abs(forwardVelocity) > 0.01)
+                    if (Math.Abs(dvf) > 0.01)
                     {
                         double r1 = 10.0;
                         double t1 = 1.5;
                         double g = gravity;
 
-                        double v = Math.Min(Math.Abs(forwardVelocity), 2.592007);
+                        double v = Math.Abs(dvf);
                         double t = Math.Sqrt(Math.Abs(2 * t1 * v / (g * Math.Tan(r1 * Math.PI / 180.0))));
-                        if (!double.IsNaN(t))
-                            desiredPitch = (r1 / t1) * t;
 
-
-                        //desiredPitch = _lut.GetRotation(Math.Abs(forwardVelocity), gravity);
-
-                        desiredPitch *= Math.Sign(forwardVelocity);
-
-                        xxxx = forwardVelocity.ToString("F2") + '\n' +
-                            desiredPitch.ToString("F1") + '\n' +
-                            shipPitch.ToString("F1") + '\n' +
-                            (g * Math.Tan(r1 * Math.PI / 180.0)).ToString("F1");
+                        //desiredPitch = _lut.GetRotation(v, g);
+                        desiredPitch = Math.Min((r1 / t1) * t, 20.0);
+                        desiredPitch *= -Math.Sign(dvf);
                     }
 
                     double rollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / 10.0));
@@ -535,11 +522,10 @@ namespace IngameScript
 
                 // Debug
                 {
-                    Vector3 vec = new Vector3(shipPitch, 0, shipRoll);
-                    //display.WriteText(vec.X.ToString("F2") + "\n" +
-                    //    vec.Y.ToString("F2") + "\n" +
-                    //    vec.Z.ToString("F2"));
-                    display.WriteText(xxxx);
+                    Vector3 vec = -_cockpit.MoveIndicator;
+                    display.WriteText(vec.X.ToString("F2") + "\n" +
+                        vec.Y.ToString("F2") + "\n" +
+                        vec.Z.ToString("F2"));
                 }
 
                 // If we would have normally used raycasted altitude, but the ship is tilted so far that we need to use elevation
@@ -1249,26 +1235,27 @@ namespace IngameScript
 
                 // First integration: find end velocity
                 double integratedV = 0.0;
-                for (int i = 0; i < r1 / stepSize; i++)
+                for (double r = 0.0; r <= r1; r += stepSize)
                 {
-                    double r = i * stepSize;
                     double a = /*g*/ Math.Tan(r * Math.PI / 180.0);
-                    double dt = stepSize / r1 * t1;
+                    double dt = stepSize * t1 / r1;
                     integratedV += a * dt;
                 }
                 _v1 = integratedV;
 
+                Echo("Calculated final velocity: " + _v1);
+
                 // Second velocity: init lut
                 _lut = new double[(int) Math.Ceiling(_v1 / stepSize)];
                 integratedV = 0;
-                for (int i = 0; i < r1 / stepSize; i++)
+                for (double r = 0.0; r <= r1; r += stepSize)
                 {
-                    double r = i * stepSize;
                     double a = /*g*/ Math.Tan(r * Math.PI / 180.0);
-                    double dt = stepSize / r1 * t1;
+                    double dt = stepSize * t1 / r1;
                     integratedV += a * dt;
 
                     int i2 = (int) Math.Floor(integratedV / stepSize);
+                    Echo($"{r:F2} -> {integratedV:F2}={i2}");
                     _lut[i2] = r;
                 }
 
