@@ -157,8 +157,6 @@ namespace IngameScript
 
         private double _altitudeOffset;
 
-        private RotationLut _lut;
-
         // Display variables
         private LcdMessage? _temporaryMessage;
 
@@ -175,7 +173,6 @@ namespace IngameScript
             LoadCustomData();
             Init();
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
-            _lut = new RotationLut(20.0, 3.0, 0.0025, Echo);
         }
 
         public void Save()
@@ -410,48 +407,46 @@ namespace IngameScript
                 isManualInput = result.b;
 
                 Vector3 input = _cockpit.MoveIndicator;
+                Vector2 rotationInput = _cockpit.RotationIndicator;
 
-                if(input.Sum!=0)
+                if(input.Sum!=0&&input.Y == 0)
                 {
                      //accel = 0f;
 
-                    double dvs = 0.0 - sidewaysVelocity;
-                    double dvf = (10.0 * -input.Z) - forwardVelocity;
+                    double dvs = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundRight) + 0.0 - sidewaysVelocity;
+                    double dvf = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundForward) + (10.0 * -input.Z) - forwardVelocity;
 
                     double desiredRoll = 0.0;
                     double desiredPitch = 0.0;
 
-                    if (Math.Abs(dvs) > 0.01)
+                    if (Math.Abs(dvs) > 0.005)
                     {
                         double r1 = 10.0;
                         double t1 = 3.0;
                         double g = gravity;
 
-                        double v = Math.Abs(dvs);
-                        double t = Math.Sqrt(Math.Abs(2 * t1 * v / (g * Math.Tan(r1 * Math.PI / 180.0))));
-
-                        //desiredRoll = _lut.GetRotation(v, g);
-                        desiredRoll = Math.Min((r1 / t1) * t, 20.0);
+                        desiredRoll = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvs) / (g * t1))) * 180.0 / Math.PI;
                         desiredRoll *= Math.Sign(dvs);
                     }
-                    if (Math.Abs(dvf) > 0.01)
+                    if (Math.Abs(dvf) > 0.005||true)
                     {
                         double r1 = 10.0;
                         double t1 = 1.5;
                         double g = gravity;
 
-                        double v = Math.Abs(dvf);
-                        double t = Math.Sqrt(Math.Abs(2 * t1 * v / (g * Math.Tan(r1 * Math.PI / 180.0))));
-
-                        //desiredPitch = _lut.GetRotation(v, g);
-                        desiredPitch = Math.Min((r1 / t1) * t, 20.0);
+                        desiredPitch = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvf) / (g * t1))) * 180.0 / Math.PI;
                         desiredPitch *= -Math.Sign(dvf);
+                        _temporaryMessage = new LcdMessage((desiredPitch - shipPitch).ToString("F3"), (float) _totalTimeRan, 10000);
                     }
+                    //if (Math.Abs(dvs) < 0.01) desiredRoll = dvs;
+                    //if (Math.Abs(dvf) < 0.01) desiredPitch = dvf;
+                    //if (Math.Abs(dvs) < 0.01) desiredRoll = 0;
+                    //if (Math.Abs(dvf) < 0.01) desiredPitch = 0;
 
-                    double rollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / 10.0));
-                    double pitchSpeed = Math.Sign(desiredPitch - shipPitch) * Math.Min(1.0, Math.Abs((desiredPitch - shipPitch) / 10.0));
+                    double rollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / 20.0));
+                    double pitchSpeed = Math.Sign(desiredPitch - shipPitch) * Math.Min(2.0, Math.Abs((desiredPitch - shipPitch) / 20.0));
 
-                    ApplyGyroOverride(pitchSpeed, 0.0, rollSpeed, _gyros, _cockpit);
+                    ApplyGyroOverride(pitchSpeed, rotationInput.Y, rollSpeed, _gyros, _cockpit);
                 }
                 else
                 {
@@ -522,10 +517,10 @@ namespace IngameScript
 
                 // Debug
                 {
-                    Vector3 vec = -_cockpit.MoveIndicator;
-                    display.WriteText(vec.X.ToString("F2") + "\n" +
-                        vec.Y.ToString("F2") + "\n" +
-                        vec.Z.ToString("F2"));
+                    //Vector3 vec = -_cockpit.MoveIndicator;
+                    //display.WriteText(vec.X.ToString("F2") + "\n" +
+                    //    vec.Y.ToString("F2") + "\n" +
+                    //    vec.Z.ToString("F2"));
                 }
 
                 // If we would have normally used raycasted altitude, but the ship is tilted so far that we need to use elevation
@@ -999,12 +994,14 @@ namespace IngameScript
             public float altitude;
             public float groundHeight;
             public float time;
+            public Vector3 surfaceVelocity;
 
-            public AltitudeData(float altitude, float groundHeight, float time)
+            public AltitudeData(float altitude, float groundHeight, float time, Vector3 surfaceVelocity)
             {
                 this.altitude = altitude;
                 this.groundHeight = groundHeight;
                 this.time = time;
+                this.surfaceVelocity = surfaceVelocity;
             }
         }
 
@@ -1092,8 +1089,11 @@ namespace IngameScript
                             Vector3 sealevelPos = GetSealevelPos(info, pos);
                             float groundHeight = GetGroundHeight(info, sealevelPos, pos, altitude);
 
+                            // Determine the speed of what we are hovering over
+                            Vector3 surfaceVelocity = raycast.Velocity;
+
                             // Store the calculated altitude data
-                            _previousRaycasts[i] = new AltitudeData(altitude, groundHeight, info.time);
+                            _previousRaycasts[i] = new AltitudeData(altitude, groundHeight, info.time, surfaceVelocity);
 
                             // Tell slope measurer about this result (but only for ONE of the cameras, it would be confused if we kept giving it
                             // results from multiple)
@@ -1133,7 +1133,7 @@ namespace IngameScript
                     alt += expectedAltitudeChange;
                     gnd += expectedAltitudeChange;
 
-                    return new AltitudeData(alt, gnd, info.time);
+                    return new AltitudeData(alt, gnd, info.time, data.surfaceVelocity);
                 }
 
                 // No recent raycasts, there is nothing to go off of
@@ -1198,88 +1198,12 @@ namespace IngameScript
                     float groundHeight = (float) (sealevel - altitude);
                     Vector3 sealevelPos = info.cockpit.GetPosition() + info.gravityDown * (float) sealevel;
                     slopeMeasurer.PushMeasurements(groundHeight, sealevelPos, info.time);
-                    return new AltitudeData((float) altitude, groundHeight, info.time);
+                    return new AltitudeData((float) altitude, groundHeight, info.time, Vector3.Zero);
                 }
                 else
                 {
                     return null;
                 }
-            }
-        }
-
-        class RotationLut
-        {
-            private double[] _lut;
-            private double _stepSize;
-            private double _v1;
-
-            public RotationLut(double r1, double t1, double stepSize, Action<string> Echo)
-            {
-                _lut = new double[1000];
-                _stepSize = stepSize;
-                _v1 = -1.0;
-
-                //double k = Math.Sqrt(2.0 * t1 / Math.Tan(r1 * Math.PI / 180.0));
-                //for (int i = 0; i < _lut.Length; i++)
-                //{
-                //    double v = i * stepSize;
-                //    double r = (r1 / t1) * k * Math.Sqrt(v);
-                //    _lut[i] = r;
-
-                //    if (r > r1)
-                //    {
-                //        _v1 = v - stepSize;
-                //        break;
-                //    }
-                //}
-
-                // First integration: find end velocity
-                double integratedV = 0.0;
-                for (double r = 0.0; r <= r1; r += stepSize)
-                {
-                    double a = /*g*/ Math.Tan(r * Math.PI / 180.0);
-                    double dt = stepSize * t1 / r1;
-                    integratedV += a * dt;
-                }
-                _v1 = integratedV;
-
-                Echo("Calculated final velocity: " + _v1);
-
-                // Second velocity: init lut
-                _lut = new double[(int) Math.Ceiling(_v1 / stepSize)];
-                integratedV = 0;
-                for (double r = 0.0; r <= r1; r += stepSize)
-                {
-                    double a = /*g*/ Math.Tan(r * Math.PI / 180.0);
-                    double dt = stepSize * t1 / r1;
-                    integratedV += a * dt;
-
-                    int i2 = (int) Math.Floor(integratedV / stepSize);
-                    Echo($"{r:F2} -> {integratedV:F2}={i2}");
-                    _lut[i2] = r;
-                }
-
-            }
-
-            public double GetRotation(double v, double g)
-            {
-                int i;
-                if ((v / g) < _v1)
-                    i = (int) Math.Floor((v / g) / _stepSize);
-                else
-                    i = _lut.Length - 1;
-
-                double result = _lut[i];
-                return result;
-
-                //int i;
-                //if (_v1 < 0 || v < _v1)
-                //    i = (int) Math.Floor(v / _stepSize);
-                //else
-                //    i = (int) Math.Floor(_v1 / _stepSize);
-
-                //double result = _lut[i];
-                //return result / Math.Sqrt(g);
             }
         }
 
