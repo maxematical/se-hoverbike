@@ -48,7 +48,7 @@ namespace IngameScript
         // Normally, the script will automatically set the parameters of the LCD panel to make sure the text is easily visible.
         // If this is false it will not do so.
         // Default value: true
-        private const bool AUTOMATICALLY_SET_LCD_PARAMS = true;
+        private const bool AUTOMATICALLY_SET_LCD_PARAMS = false;//TODO
 
         // The more this value is, the earlier the hoverbike will brake when it's high in the air. When braking early, it will keep
         // using maximal thrust if necessary, but otherwise will use less thrust to avoid stopping too early. Setting this value to 0
@@ -242,6 +242,7 @@ namespace IngameScript
                 if (_initialized)
                 {
                     ResetThrusters();
+                    ResetGyros();
                     ResetDisplays();
                 }
             }
@@ -302,6 +303,7 @@ namespace IngameScript
             shipDown.Normalize();
             shipRight.Normalize();
             shipForward.Normalize();
+            Vector3 shipUp = -shipDown;
 
             // Determine axes relative to the ship, but also parallel to the ground
             Vector3 groundForward = Vector3.Cross(shipRight, gravityDown);
@@ -409,12 +411,24 @@ namespace IngameScript
                 Vector3 input = _cockpit.MoveIndicator;
                 Vector2 rotationInput = _cockpit.RotationIndicator;
 
-                if(input.Sum!=0&&input.Y == 0)
-                {
-                     //accel = 0f;
+                float sidewaysInput = _cockpit.RollIndicator;
+                float forwardInput = -input.Z;
+                float yawInput = input.X;
 
-                    double dvs = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundRight) + 0.0 - sidewaysVelocity;
-                    double dvf = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundForward) + (10.0 * -input.Z) - forwardVelocity;
+                if(true)
+                {
+                    //accel = 0f;
+
+                    double desiredSidewaysVelocity = 10.0 * sidewaysInput;
+                    double desiredForwardVelocity = 10.0 * forwardInput;
+                    if (input.Y != 0)
+                    {
+                        desiredSidewaysVelocity = 0.0;
+                        desiredForwardVelocity = 0.0;
+                    }
+
+                    double dvs = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundRight) + desiredSidewaysVelocity - sidewaysVelocity;
+                    double dvf = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundForward) + desiredForwardVelocity - forwardVelocity;
 
                     double desiredRoll = 0.0;
                     double desiredPitch = 0.0;
@@ -422,7 +436,7 @@ namespace IngameScript
                     if (Math.Abs(dvs) > 0.005)
                     {
                         double r1 = 10.0;
-                        double t1 = 3.0;
+                        double t1 = 1.0;
                         double g = gravity;
 
                         desiredRoll = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvs) / (g * t1))) * 180.0 / Math.PI;
@@ -438,19 +452,124 @@ namespace IngameScript
                         desiredPitch *= -Math.Sign(dvf);
                         _temporaryMessage = new LcdMessage((desiredPitch - shipPitch).ToString("F3"), (float) _totalTimeRan, 10000);
                     }
+
+                    _temporaryMessage = new LcdMessage(sidewaysInput.ToString("F3"), (float) _totalTimeRan, 10000);
+
+                    desiredRoll = Clamp(-40.0, 40.0, desiredRoll);
+                    desiredPitch = Clamp(-40.0, 40.0, desiredPitch);
+
+                    double rs = 20.0;
+                    double ps = 20.0;
+
+                    if (Math.Abs(dvs) < 0.005 && Math.Abs(shipRoll) < 0.5)
+                    {
+                        desiredRoll = 0.0;
+                        rs = 2.0;
+                    }
+                    if (Math.Abs(dvf) < 0.005 && Math.Abs(shipPitch) < 0.5)
+                    {
+                        desiredPitch = 0.0;
+                        ps = 2.0;
+                    }
+
                     //if (Math.Abs(dvs) < 0.01) desiredRoll = dvs;
                     //if (Math.Abs(dvf) < 0.01) desiredPitch = dvf;
                     //if (Math.Abs(dvs) < 0.01) desiredRoll = 0;
                     //if (Math.Abs(dvf) < 0.01) desiredPitch = 0;
 
-                    double rollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / 20.0));
-                    double pitchSpeed = Math.Sign(desiredPitch - shipPitch) * Math.Min(2.0, Math.Abs((desiredPitch - shipPitch) / 20.0));
+                    //double ps = Lerp(70.0, 20.0, (desiredPitch - shipPitch) / 10.0);
+                    //double ps = 20.0;
 
-                    ApplyGyroOverride(pitchSpeed, rotationInput.Y, rollSpeed, _gyros, _cockpit);
+                    double rollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / rs));
+                    double pitchSpeed = Math.Sign(desiredPitch - shipPitch) * Math.Min(2.0, Math.Abs((desiredPitch - shipPitch) / ps));
+                    double yawSpeed = yawInput * 10.0 - -angularVelocity.Y; //Math.Sign(yawInput - angularVelocity.Y) * Clamp(0.0, 4.0, 16 * (Math.Abs(yawInput - angularVelocity.Y) - 0.5));
+
+                    double pitchSpeedr = pitchSpeed * Math.PI / 180.0;
+                    double rollSpeedr = rollSpeed * Math.PI / 180.0;
+                    double yawSpeedr = yawSpeed * Math.PI / 180.0;
+
+                    Vector3 newForward = Vector3.Transform(shipForward, Quaternion.CreateFromAxisAngle(-groundRight, (float) pitchSpeedr));
+                    //Vector3 newUp = Vector3.Transform(shipUp, Quaternion.CreateFromAxisAngle(-groundRight, (float) pitchSpeedr));
+                    //double new_pitchSpeed = Math.Acos(Vector3.Dot(newForward, shipForward)) * 180 / Math.PI;
+                    //if (double.IsNaN(new_pitchSpeed))
+                    //    new_pitchSpeed = 0.0;
+                    //if (pitchSpeed < 0)
+                    //    new_pitchSpeed *= -1;
+
+                    //Quaternion q = Quaternion.CreateFromAxisAngle(shipForward, (float) rollSpeedr) *
+                    //    Quaternion.CreateFromAxisAngle(-shipRight, (float) pitchSpeedr) *
+                    //    Quaternion.CreateFromAxisAngle(shipUp, (float) yawSpeedr);
+                    //Quaternion q = Quaternion.CreateFromAxisAngle(shipRight, (float) pitchSpeedr) *
+                    //    Quaternion.CreateFromAxisAngle(Vector3.Forward, (float) rollSpeedr);
+                    //Quaternion.CreateFromAxisAngle(gravdown)
+
+                    //Quaternion q = Quaternion.CreateFromAxisAngle(Vector3.Right, (float) pitchSpeedr);
+                    //shipForward.Normalize();
+                    //shipUp.Normalize();
+                    //shipRight.Normalize();
+                    //Quaternion.Inverse(Quaternion.CreateFromForwardUp(shipForward, shipUp));
+
+                    // good, but only rotates pitch // Quaternion q = Quaternion.CreateFromAxisAngle(groundRight, (float) pitchSpeedr);
+                    Quaternion q = //Quaternion.CreateFromAxisAngle(Vector3.Right, (float) pitchSpeedr) *
+                        Quaternion.CreateFromAxisAngle(-gravityDown, (float) yawSpeedr);
+                    Vector3 rotateAxis;
+                    float rotateAngle;
+                    q.GetAxisAngle(out rotateAxis, out rotateAngle);
+                    rotateAxis = Vector3.TransformNormal(rotateAxis, Matrix.Transpose(_cockpit.WorldMatrix.GetOrientation()));
+
+                    // When using Quaternion.CreateFromAxisAngle, the quaternion is rotated such that:
+                    // - Right axis is parallel with the axis provided
+                    // - Forward and up axes are perpendicular to the axis provided
+                    // E.g. if "gravityDown" is provided as the axis, then right axis will be gravity down, forward/right axes will be perpendicular to gravity
+
+                    _cockpit.CustomData = FormatGPS(_cockpit.GetPosition(), "scr Cockpit") + '\n' +
+                        FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Forward, q), "scr Quaternion Forward Axis") + '\n' +
+                        FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Right, q), "scr Quaternion Right Axis") + '\n' +
+                        FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Up, q), "scr Quaternion Up Axis") + '\n';
+
+                    //Vector3 new_speeds = QuaternionToEuler(
+                    //    Quaternion.CreateFromAxisAngle(Vector3.Up, (float) yawSpeedr) *
+                    //    Quaternion.CreateFromAxisAngle(Vector3.Left, (float) pitchSpeedr) *
+                    //    Quaternion.CreateFromAxisAngle(Vector3.Forward, (float) rollSpeedr) *
+
+                    //    );
+                    Vector3 new_speeds = GetEulerAngles(rotateAxis, rotateAngle);
+                    double new_pitchSpeed = 180.0 / Math.PI * new_speeds.Z;
+                    double new_yawSpeed   = -180.0 / Math.PI * new_speeds.Y;
+                    double new_rollSpeed  = -180.0 / Math.PI * new_speeds.X;
+
+                    // better but doesnt really work // double new_pitchSpeed = TransformRotationSpeed(Quaternion.CreateFromAxisAngle(groundRight, (float) pitchSpeedr), 2);
+                    // better but doesnt really work // double new_yawSpeed =TransformRotationSpeed(Quaternion.CreateFromAxisAngle(-gravityDown, (float) yawSpeedr), 1);
+                    // better but doesnt really work // double new_rollSpeed = -TransformRotationSpeed(Quaternion.CreateFromAxisAngle(groundForward, (float) rollSpeedr), 0);
+
+                    //Vector3 newRight = Vector3.Transform(shipRight, Quaternion.CreateFromAxisAngle(groundForward, (float) rollSpeed * (float) Math.PI / 180f));
+                    //double new_rollSpeed = Math.Acos(Vector3.Dot(newRight, shipRight)) * 180 / Math.PI;
+                    //if (double.IsNaN(new_rollSpeed))
+                    //    new_rollSpeed = 0.0;
+                    //if (rollSpeed < 0)
+                    //    new_rollSpeed *= -1;
+
+                    //Quaternion cockpitQuaternion;
+                    //_cockpit.Orientation.GetQuaternion(out cockpitQuaternion);
+                    //Quaternion.
+                    //Quaternion q = Quaternion.Multiply(Quaternion.CreateFromAxisAngle(shipForward, (float)rollSpeed), Quaternion.Inverse(cockpitQuaternion));'
+                    //Matrix cockpitMatrix;
+                    //_cockpit.Orientation.GetMatrix(out cockpitMatrix);
+                    //ApplyGyroOverride(0.0, 0.l0, q.)
+
+                    ApplyGyroOverride(new_pitchSpeed, new_yawSpeed, new_rollSpeed, _gyros, _cockpit);
+                    //ApplyGyroOverride(pitchSpeed, yawSpeed, rollSpeed, _gyros, _cockpit);
+                    _temporaryMessage = new LcdMessage(pitchSpeed.ToString("F3") + "\n" + new_pitchSpeed.ToString("F3"), (float) _totalTimeRan, 1000f);
+                    //_temporaryMessage = new LcdMessage(Vector3.Dot(_cockpit.WorldMatrix.Forward, shipForward).ToString("F3"), (float) _totalTimeRan, 1000f);
                 }
                 else
                 {
-                    RemoveGyroOverride();
+                    if(input.Y != 0)
+                    {
+                        isManualInput = true;
+                        accel = Lerp(minAccel, maxAccel, 0.5f + 0.5f * _cockpit.MoveIndicator.Y);
+                    }
+                    ResetGyros();
                 }
             }
 
@@ -557,6 +676,51 @@ namespace IngameScript
 
                 display.FontColor = new Color(100, 100, 255);
             }
+        }
+        
+        float TransformRotationSpeed(Quaternion rotate, int eulerComponent, bool convertToDegrees = true)
+        {
+            Vector3 axis;
+            float angle;
+            rotate.GetAxisAngle(out axis, out angle);
+            axis = Vector3.TransformNormal(axis, MatrixD.Invert(_cockpit.WorldMatrix.GetOrientation()));
+
+            Vector3 eulers = GetEulerAngles(axis, angle);
+            float result = eulers.GetDim(eulerComponent);
+
+            if (convertToDegrees)
+                result *= 180f / (float) Math.PI;
+            return result;
+        }
+
+        Vector3 GetEulerAngles(Vector3 axis, float radians)
+        {
+            // http://www.euclideanspace.com/maths/geometry/rotations/conversions/angleToEuler/index.htm
+            float x = axis.X;
+            float y = axis.Y;
+            float z = axis.Z;
+            float a = radians;
+
+            float sinA = (float) Math.Sin(a);
+            float cosA = (float) Math.Cos(a);
+
+            return new Vector3((float) Math.Asin(x * y * (1f - cosA) + z * sinA),
+                (float) Math.Atan2(y * sinA - x * z * (1 - cosA), 1 - (y * y + z * z) * (1 - cosA)),
+                (float) Math.Atan2(x * sinA - y * z * (1 - cosA), 1 - (x * x + z * z) * (1 - cosA)));
+        }
+
+        Vector3 QuaternionToEuler(Quaternion q)
+        {
+            float x = q.X;
+            float y = q.Y;
+            float z = q.Z;
+            float w = q.W;
+            float x2 = x * x;
+            float y2 = y * y;
+            float z2 = z * z;
+            return new Vector3((float) Math.Asin(2 * x * y + 2 * z * w),            // attitude
+                (float) Math.Atan2(2 * y * w - 2 * x * z, 1 - 2 * y2 - 2 * z2),     // heading
+                (float) Math.Atan2(2 * x * w - 2 * y * z, 1 - 2 * x2 - 2 * z2));    // bank
         }
 
         ValueTuple<float, bool> CalculateDesiredAccel(double altitude, double minAltitude, double maxAltitude,
@@ -897,6 +1061,8 @@ namespace IngameScript
 
         static double Lerp(double a, double b, double t) => a + (b - a) * Clamp(0.0, 1.0, t);
 
+        static float Lerp(float a, float b, float t) => a + (b - a) * Clamp(0f, 1f, t);
+
         static Vector3 Lerp(Vector3 a, Vector3 b, float t) => a + (b - a) * Clamp(0f, 1f, t);
 
         new void Echo(object obj)
@@ -929,7 +1095,7 @@ namespace IngameScript
             }
         }
 
-        void RemoveGyroOverride()
+        void ResetGyros()
         {
             foreach (IMyGyro gyro in _gyros)
             {
