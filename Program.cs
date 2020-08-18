@@ -419,7 +419,7 @@ namespace IngameScript
                 {
                     //accel = 0f;
 
-                    double desiredSidewaysVelocity = 10.0 * sidewaysInput;
+                    double desiredSidewaysVelocity = 6.0 * sidewaysInput;
                     double desiredForwardVelocity = 10.0 * forwardInput;
                     if (input.Y != 0)
                     {
@@ -436,7 +436,7 @@ namespace IngameScript
                     if (Math.Abs(dvs) > 0.005)
                     {
                         double r1 = 10.0;
-                        double t1 = 1.0;
+                        double t1 = 2.0;
                         double g = gravity;
 
                         desiredRoll = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvs) / (g * t1))) * 180.0 / Math.PI;
@@ -488,7 +488,7 @@ namespace IngameScript
                     double rollSpeedr = rollSpeed * Math.PI / 180.0;
                     double yawSpeedr = yawSpeed * Math.PI / 180.0;
 
-                    Vector3 newForward = Vector3.Transform(shipForward, Quaternion.CreateFromAxisAngle(-groundRight, (float) pitchSpeedr));
+                    //Vector3 newForward = Vector3.Transform(shipForward, Quaternion.CreateFromAxisAngle(-groundRight, (float) pitchSpeedr));
                     //Vector3 newUp = Vector3.Transform(shipUp, Quaternion.CreateFromAxisAngle(-groundRight, (float) pitchSpeedr));
                     //double new_pitchSpeed = Math.Acos(Vector3.Dot(newForward, shipForward)) * 180 / Math.PI;
                     //if (double.IsNaN(new_pitchSpeed))
@@ -509,23 +509,59 @@ namespace IngameScript
                     //shipRight.Normalize();
                     //Quaternion.Inverse(Quaternion.CreateFromForwardUp(shipForward, shipUp));
 
+                    // TODO    // float axisangleangle = groundForward;
+
                     // good, but only rotates pitch // Quaternion q = Quaternion.CreateFromAxisAngle(groundRight, (float) pitchSpeedr);
+
+                    float yaw;
+                    {
+                        // https://stackoverflow.com/a/5190354
+                        Vector3 yaw0Forward = Vector3.Transform(Vector3.Forward, Quaternion.CreateFromAxisAngle(-gravityDown, 0f));
+                        yaw = (float) Math.Acos(Vector3.Dot(groundForward, yaw0Forward)) * 180f / (float) Math.PI;
+
+                        Vector3 cross = Vector3.Cross(groundForward, yaw0Forward);
+                        if (Vector3.Dot(-gravityDown, cross) > 0)
+                            yaw = 360f - yaw;
+                    }
+                    //Yaw is good(I think). Verify by checking the following is ~1: Vector3.Dot(groundForward, Vector3.Transform(Vector3.Forward, Q.AxisAngle(gravup, yawrad)))
+
+                    //Naive yaw calculation, from 0-pi rad: // float yaw = (float)Math.Acos(Vector3.Dot(groundForward, Vector3.Transform(Vector3.Forward, Quaternion.CreateFromAxisAngle(gravityDown, 0f))));
+
                     Quaternion q = //Quaternion.CreateFromAxisAngle(Vector3.Right, (float) pitchSpeedr) *
-                        Quaternion.CreateFromAxisAngle(-gravityDown, (float) yawSpeedr);
+                                   //Quaternion.CreateFromAxisAngle(Vector3.Right, shipPitch * (float) Math.PI / 180f    * 00000) *
+                                   // not is work Quaternion.CreateFromAxisAngle(-gravityDown, yaw * (float) Math.PI / 180f/*(float) yawSpeedr*/)
+                        Quaternion.CreateFromAxisAngle(Vector3.Forward, ToRad(shipRoll) + (float) rollSpeedr) *
+                        Quaternion.CreateFromAxisAngle(Vector3.Right, ToRad(shipPitch) + (float) pitchSpeedr) *
+                        Quaternion.CreateFromAxisAngle(Vector3.Up, (float) yawSpeedr) *
+                        Quaternion.Inverse(Quaternion.CreateFromForwardUp(shipForward, shipUp)) *
+                        Quaternion.CreateFromForwardUp(groundForward, -gravityDown)
+                        ;
+                        //Quaternion.Inverse(Quaternion.CreateFromForwardUp(shipForward, shipUp));
                     Vector3 rotateAxis;
                     float rotateAngle;
                     q.GetAxisAngle(out rotateAxis, out rotateAngle);
-                    rotateAxis = Vector3.TransformNormal(rotateAxis, Matrix.Transpose(_cockpit.WorldMatrix.GetOrientation()));
+//                    rotateAxis = Vector3.TransformNormal(rotateAxis, Matrix.Transpose(_cockpit.WorldMatrix.GetOrientation()));
 
                     // When using Quaternion.CreateFromAxisAngle, the quaternion is rotated such that:
                     // - Right axis is parallel with the axis provided
                     // - Forward and up axes are perpendicular to the axis provided
                     // E.g. if "gravityDown" is provided as the axis, then right axis will be gravity down, forward/right axes will be perpendicular to gravity
-
                     _cockpit.CustomData = FormatGPS(_cockpit.GetPosition(), "scr Cockpit") + '\n' +
+                        FormatGPS(_cockpit.GetPosition() + 5f * groundForward, "scr Ground Forward") + '\n' +
                         FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Forward, q), "scr Quaternion Forward Axis") + '\n' +
                         FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Right, q), "scr Quaternion Right Axis") + '\n' +
-                        FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Up, q), "scr Quaternion Up Axis") + '\n';
+                        FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Up, q), "scr Quaternion Up Axis") + '\n' +
+                        '\n' +
+                        "Yaw: " + yaw.ToString("F2") + '\n' +
+                        "Dot(GroundForward, AngleAxis(gravup,yaw) * Vector3.Forward) (should be ~1): " + Vector3.Dot(groundForward, Vector3.Transform(Vector3.Forward,
+                            Quaternion.CreateFromAxisAngle(-gravityDown, yaw * (float) Math.PI / 180f)
+                        )).ToString("F2") + '\n' + // WORKS!
+                        "Should be almost exactly 0: " + Vector3.Dot(gravityDown, Vector3.Transform(Vector3.Forward,
+                            Quaternion.CreateFromForwardUp(groundForward, -gravityDown)
+                        )).ToString("F4") + '\n' +
+                        "Euler deltas: " + GetEulerAngles(rotateAxis,rotateAngle) + '\n' + // not sure what this should be yet
+                        // vvv Doesn't work!
+                        "Dot(ShipForward, q * Vector3.Forward) (should be ~1): " + Vector3.Dot(shipForward, Vector3.Transform(Vector3.Forward, q)).ToString("F2") + '\n';
 
                     //Vector3 new_speeds = QuaternionToEuler(
                     //    Quaternion.CreateFromAxisAngle(Vector3.Up, (float) yawSpeedr) *
@@ -533,10 +569,10 @@ namespace IngameScript
                     //    Quaternion.CreateFromAxisAngle(Vector3.Forward, (float) rollSpeedr) *
 
                     //    );
-                    Vector3 new_speeds = GetEulerAngles(rotateAxis, rotateAngle);
-                    double new_pitchSpeed = 180.0 / Math.PI * new_speeds.Z;
-                    double new_yawSpeed   = -180.0 / Math.PI * new_speeds.Y;
-                    double new_rollSpeed  = -180.0 / Math.PI * new_speeds.X;
+                    Vector3 new_speeds = -GetEulerAngles(rotateAxis, rotateAngle) * 5;
+                    double new_pitchSpeed = -180.0 / Math.PI * new_speeds.Z * 0.2;
+                    double new_yawSpeed   = -180.0 / Math.PI * new_speeds.Y * 0.2;
+                    double new_rollSpeed  = 180.0 / Math.PI * new_speeds.X * 0.2;
 
                     // better but doesnt really work // double new_pitchSpeed = TransformRotationSpeed(Quaternion.CreateFromAxisAngle(groundRight, (float) pitchSpeedr), 2);
                     // better but doesnt really work // double new_yawSpeed =TransformRotationSpeed(Quaternion.CreateFromAxisAngle(-gravityDown, (float) yawSpeedr), 1);
