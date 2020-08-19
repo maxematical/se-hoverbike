@@ -156,6 +156,7 @@ namespace IngameScript
         private bool _isHangarMode;
 
         private double _altitudeOffset;
+        private Vector2D _wasdDesiredSpeed;
 
         // Display variables
         private LcdMessage? _temporaryMessage;
@@ -165,6 +166,7 @@ namespace IngameScript
         private SlopeMeasurer _slopeMeasurer;
         private AltitudeProvider _raycastAltitudeProvider;
         private AltitudeProvider _elevationAltitudeProvider;
+        private WasdInputHandler _input;
 
         private double _totalTimeRan;
 
@@ -408,27 +410,46 @@ namespace IngameScript
                 accel = result.a;
                 isManualInput = result.b;
 
-                Vector3 input = _cockpit.MoveIndicator;
-                Vector2 rotationInput = _cockpit.RotationIndicator;
+                _input.Update(_cockpit, _totalTimeRan);
+                double dt = Runtime.TimeSinceLastRun.TotalSeconds;
 
-                float sidewaysInput = _cockpit.RollIndicator;
-                float forwardInput = -input.Z;
-                float yawInput = input.X;
-
-                if(true)
+                if (true)
                 {
-                    //accel = 0f;
+                    // Update desired speed
+                    // Increase/decrease speed when keys pressed, faster if the key has been held down for at least 0.5s
+                    _wasdDesiredSpeed.X += 3.0 * (_input._InputDuration.X > 0.5 ? 1.0 : 0.5) * _input._Current.X * dt;
+                    _wasdDesiredSpeed.Y += 5.0 * (_input._InputDuration.Y > 0.5 ? 1.0 : 0.5) * _input._Current.Y * dt;
 
-                    double desiredSidewaysVelocity = 6.0 * sidewaysInput;
-                    double desiredForwardVelocity = 10.0 * forwardInput;
-                    if (input.Y != 0)
+                    // Reset speed when a) it is +-2m/s or less, b) pressed key in the opposite direction last tick, and c) not pressing key anymore
+                    if (_input._Last.X != 0 && Math.Sign(_input._Last.X) != Math.Sign(_wasdDesiredSpeed.X) &&
+                            _input._Current.X == 0 && Math.Abs(_wasdDesiredSpeed.X) < 2.0)
+                        _wasdDesiredSpeed.X = 0.0;
+                    if (_input._Last.Y != 0 && Math.Sign(_input._Last.Y) != Math.Sign(_wasdDesiredSpeed.Y) &&
+                            _input._Current.Y == 0 && Math.Abs(_wasdDesiredSpeed.Y) < 2.0)
+                        _wasdDesiredSpeed.Y = 0.0;
+
+                    // Double tapping gives either a speed boost if done in the same direction as current velocity, or resets speed for the opposite direction
+                    if (_input.PopDoublePress(0, _totalTimeRan))
                     {
-                        desiredSidewaysVelocity = 0.0;
-                        desiredForwardVelocity = 0.0;
+                        _wasdDesiredSpeed.X = (Math.Sign(_input._Current.X) == Math.Sign(_wasdDesiredSpeed.X)) ?
+                            6.0 * Math.Sign(_input._Current.X) :
+                            0.0;
+                    }
+                    if (_input.PopDoublePress(1, _totalTimeRan))
+                    {
+                        _wasdDesiredSpeed.Y = (Math.Sign(_input._Current.Y) == Math.Sign(_wasdDesiredSpeed.Y)) ?
+                            10.0 * Math.Sign(_input._Current.Y) :
+                            0.0;
                     }
 
-                    double dvs = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundRight) + desiredSidewaysVelocity - sidewaysVelocity;
-                    double dvf = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundForward) + desiredForwardVelocity - forwardVelocity;
+                    // Cap desired speed to 6m/s horizontal, 10m/s forward
+                    if (Math.Abs(_wasdDesiredSpeed.X) > 6.0)
+                        _wasdDesiredSpeed.X = 6.0 * Math.Sign(_wasdDesiredSpeed.X);
+                    if (Math.Abs(_wasdDesiredSpeed.Y) > 10.0)
+                        _wasdDesiredSpeed.Y = 10.0 * Math.Sign(_wasdDesiredSpeed.Y);
+
+                    double dvs = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundRight) + _wasdDesiredSpeed.X - sidewaysVelocity;
+                    double dvf = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundForward) + _wasdDesiredSpeed.Y - forwardVelocity;
 
                     double desiredRoll = 0.0;
                     double desiredPitch = 0.0;
@@ -452,8 +473,6 @@ namespace IngameScript
                         desiredPitch *= -Math.Sign(dvf);
                         _temporaryMessage = new LcdMessage((desiredPitch - shipPitch).ToString("F3"), (float) _totalTimeRan, 10000);
                     }
-
-                    _temporaryMessage = new LcdMessage(sidewaysInput.ToString("F3"), (float) _totalTimeRan, 10000);
 
                     desiredRoll = Clamp(-40.0, 40.0, desiredRoll);
                     desiredPitch = Clamp(-40.0, 40.0, desiredPitch);
@@ -482,7 +501,7 @@ namespace IngameScript
 
                     double rollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / rs));
                     double pitchSpeed = Math.Sign(desiredPitch - shipPitch) * Math.Min(2.0, Math.Abs((desiredPitch - shipPitch) / ps));
-                    double yawSpeed = yawInput * 10.0 - -angularVelocity.Y; //Math.Sign(yawInput - angularVelocity.Y) * Clamp(0.0, 4.0, 16 * (Math.Abs(yawInput - angularVelocity.Y) - 0.5));
+                    double yawSpeed = _input._CurrentYaw * Lerp(10f, 2f, horizontalVelocity.Length() / 5f) - -angularVelocity.Y; //Math.Sign(yawInput - angularVelocity.Y) * Clamp(0.0, 4.0, 16 * (Math.Abs(yawInput - angularVelocity.Y) - 0.5));
 
                     double pitchSpeedr = pitchSpeed * Math.PI / 180.0;
                     double rollSpeedr = rollSpeed * Math.PI / 180.0;
@@ -600,13 +619,15 @@ namespace IngameScript
                 }
                 else
                 {
-                    if(input.Y != 0)
+                    if(false)
                     {
                         isManualInput = true;
                         accel = Lerp(minAccel, maxAccel, 0.5f + 0.5f * _cockpit.MoveIndicator.Y);
                     }
                     ResetGyros();
                 }
+
+                _input.PostUpdate(_totalTimeRan, dt);
             }
 
             // Count non-damaged thrusters
@@ -638,8 +659,10 @@ namespace IngameScript
                     continue;
 
                 // Determine first two lines to write
-                string line1 = (Math.Abs(forwardVelocity) > 5) ? forwardVelocity.ToString("F0") : forwardVelocity.ToString("F1");
-                string line2 = (Math.Abs(sidewaysVelocity) > 5) ? sidewaysVelocity.ToString("F0") : sidewaysVelocity.ToString("F1");
+                double dispForwardVelocity = _wasdDesiredSpeed.Y; // forwardVelocity;
+                double dispSidewaysVelocity = _wasdDesiredSpeed.X; // sidewaysVelocity;
+                string line1 = (Math.Abs(dispForwardVelocity) > 5) ? dispForwardVelocity.ToString("F0") : dispForwardVelocity.ToString("F1");
+                string line2 = (Math.Abs(dispSidewaysVelocity) > 5) ? dispSidewaysVelocity.ToString("F0") : dispSidewaysVelocity.ToString("F1");
 
                 // Determine third line to write
                 string line3 = "";
@@ -1004,6 +1027,7 @@ namespace IngameScript
             _slopeMeasurer = new SlopeMeasurer();
             _raycastAltitudeProvider = new RaycastAltitudeProvider(_bottomCameras, _cockpit.Orientation.Forward);
             _elevationAltitudeProvider = new ElevationAltitudeProvider();
+            _input = new WasdInputHandler();
 
             return true;
         }
@@ -1041,6 +1065,27 @@ namespace IngameScript
                 {
                     _altitudeOffset = 0.0;
                 }
+
+                // Load WASD speed
+                bool loadedWasdSpeed = false;
+                if (lines.Length >= 5)
+                {
+                    string[] split = lines[4].Split(' ');
+                    if (split.Length == 2)
+                    {
+                        double x;
+                        double y;
+                        if (double.TryParse(split[0], out x) && double.TryParse(split[1], out y))
+                        {
+                            _wasdDesiredSpeed = new Vector2D(x, y);
+                            loadedWasdSpeed = true;
+                        }
+                    }
+                }
+                if (!loadedWasdSpeed)
+                {
+                    _wasdDesiredSpeed = new Vector2D();
+                }
             }
             else
             {
@@ -1062,7 +1107,11 @@ namespace IngameScript
             state += (_landing ? 'y' : 'n');
             state += (_isHangarMode ? 'y' : 'n');
 
-            Me.CustomData = VERSION + '\n' + _blockGroupName + '\n' + state + '\n' + _altitudeOffset;
+            Me.CustomData = VERSION + '\n'                              // Line 1: version
+                + _blockGroupName + '\n' +                              // Line 2: name of block group
+                state + '\n' +                                          // Line 3: current control state (controlling, landing, hangar)
+                _altitudeOffset + '\n' +                                // Line 4: altitude offset
+                $"{_wasdDesiredSpeed.X:F2} {_wasdDesiredSpeed.Y:F2}\n"; // Line 5: WASD desired speed
         }
 
         void ResetDisplays()
@@ -1413,6 +1462,87 @@ namespace IngameScript
         {
             // The camera block this scanning camera uses
             public IMyCameraBlock _cameraBlock;
+        }
+
+        class WasdInputHandler
+        {
+            public Vector2 _Current { get; private set; }
+
+            public float _CurrentYaw { get; private set; }
+
+            private Vector2 _DirectInput { get; set; }
+
+            public Vector2 _Last { get; private set; }
+            public Vector2D _InputDuration { get; private set; }
+
+            private Vector2 _LastNonzeroInput { get; set; }
+            private Vector2D _LastNonzeroInputTime { get; set; }
+            private Vector2D _LastDoublepressTime { get; set; }
+
+            public void Update(IMyCockpit cockpit, double currentTime)
+            {
+                Vector2 current = new Vector2(cockpit.RollIndicator, -cockpit.MoveIndicator.Z);
+                _DirectInput = current;
+                if (currentTime - _LastDoublepressTime.X < 0.25) current.X = 0;
+                if (currentTime - _LastDoublepressTime.Y < 0.25) current.Y = 0;
+                _Current = current;
+
+                _CurrentYaw = cockpit.MoveIndicator.X;
+            }
+
+            public void PostUpdate(double currentTime, double dt)
+            {
+                // Update how long the inputs have been pressed
+                Vector2D inputDuration = _InputDuration;
+                if (_DirectInput.X == _Last.X) inputDuration.X += dt; else inputDuration.X = 0.0;
+                if (_DirectInput.Y == _Last.Y) inputDuration.Y += dt; else inputDuration.Y = 0.0;
+                _InputDuration = inputDuration;
+
+                // Update last nonzero input
+                Vector2 lastNonzeroInput = _LastNonzeroInput;
+                Vector2D lastNonzeroInputTime = _LastNonzeroInputTime;
+
+                if (_DirectInput.X == 0 && _Last.X != 0)
+                {
+                    lastNonzeroInput.X = _Last.X;
+                    lastNonzeroInputTime.X = currentTime;
+                }
+                if (_DirectInput.Y == 0 && _Last.Y != 0)
+                {
+                    lastNonzeroInput.Y = _Last.Y;
+                    lastNonzeroInputTime.Y = currentTime;
+                }
+
+                _LastNonzeroInput = lastNonzeroInput;
+                _LastNonzeroInputTime = lastNonzeroInputTime;
+
+                // Update last input
+                _Last = _DirectInput;
+            }
+
+            public bool PopDoublePress(int component, double currentTime)
+            {
+                if (component < 0 || component > 1) throw new ArgumentException("Component must be 0 or 1 (x or y)");
+
+                // Check double press
+                bool doublepress = _DirectInput[component] != 0 && // key is down
+                    _DirectInput[component] == _LastNonzeroInput[component] && // key was previously down
+                    (currentTime - _LastNonzeroInputTime[component]) < 0.25; // key was down recently
+
+                // If double press, clear the double press so this won't return true again until another double press
+                if (doublepress)
+                {
+                    var v = _LastDoublepressTime;
+                    v[component] = currentTime;
+                    _LastDoublepressTime = v;
+
+                    var w = _LastNonzeroInput;
+                    w[component] = 0f;
+                    _LastNonzeroInput = w;
+                }
+
+                return doublepress;
+            }
         }
 
         struct LcdMessage
