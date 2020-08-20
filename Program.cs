@@ -167,11 +167,13 @@ namespace IngameScript
         private AltitudeProvider _raycastAltitudeProvider;
         private AltitudeProvider _elevationAltitudeProvider;
         private WasdInputHandler _input;
+        private PerformanceStats _perf;
 
         private double _totalTimeRan;
 
         public Program()
         {
+            _perf = new PerformanceStats();
             LoadCustomData();
             Init();
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
@@ -190,7 +192,10 @@ namespace IngameScript
                 if (_initialized && _controlling)
                 {
                     DoUpdate();
-                    Echo("Time taken for last run: " + Runtime.LastRunTimeMs.ToString("F2") + "ms");
+                    Echo($"Performance stats:\n" +
+                        $"- current runtime: {Runtime.LastRunTimeMs * 1000:F2}ms\n" +
+                        $"- average runtime: {_perf.avgRuntimeMs * 1000:F2}ms\n" +
+                        $"- maximum runtime: {_perf.maxRuntimeMs * 1000:F2}ms");
                 }
                 _totalTimeRan += Runtime.TimeSinceLastRun.TotalSeconds;
                 return;
@@ -1454,6 +1459,37 @@ namespace IngameScript
                 }
 
                 return doublepress;
+            }
+        }
+
+        class PerformanceStats
+        {
+            public double maxRuntimeMs;
+            public double maxRuntimeTime;
+            public double avgRuntimeMs;
+
+            private double nextAvgRuntime;
+            private int numberAvgRuntime;
+            private double nextAvgRuntimeStart;
+
+            void Update(double ms, double time)
+            {
+                // Update average runtime
+                nextAvgRuntime += ms;
+                numberAvgRuntime++;
+                if (time - nextAvgRuntimeStart > 1.0)
+                {
+                    avgRuntimeMs = nextAvgRuntime / numberAvgRuntime;
+                    nextAvgRuntime = 0.0;
+                    nextAvgRuntimeStart = time;
+                }
+
+                // Update max runtime
+                if (ms > maxRuntimeMs || (time - maxRuntimeTime) > 4.0)
+                {
+                    maxRuntimeMs = ms;
+                    maxRuntimeTime = time;
+                }
             }
         }
 
