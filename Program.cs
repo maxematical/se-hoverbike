@@ -154,6 +154,7 @@ namespace IngameScript
         private bool _controlling;
         private bool _landing;
         private bool _isHangarMode;
+        private bool _isWasd;
 
         private double _altitudeOffset;
         private Vector2D _wasdDesiredSpeed;
@@ -242,6 +243,7 @@ namespace IngameScript
                 _controlling = true;
                 _landing = false;
                 _isHangarMode = false;
+                _isWasd = false;
             }
             if (argument == "stop")
             {
@@ -257,6 +259,8 @@ namespace IngameScript
             {
                 _landing = true;
                 _controlling = true;
+                _isWasd = true;
+
                 _wasdDesiredSpeed = new Vector2D(0.0, 0.0);
             }
             if (argument == "hangar")
@@ -264,6 +268,7 @@ namespace IngameScript
                 _controlling = true;
                 _landing = false;
                 _isHangarMode = true;
+                _isWasd = true;
             }
             if (argument == "higher" || argument == "lower" || argument == "checkoffset" || argument == "offset0")
             {
@@ -427,21 +432,14 @@ namespace IngameScript
                     minAccel, safeAccel, maxAccel);
                 accel = result.a;
                 isManualInput = result.b;
-
-                _input.Update(_cockpit, _totalTimeRan);
-                double dt = Runtime.TimeSinceLastRun.TotalSeconds;
-
-                if (true)
-                {
-                    ApplyWasdControls(dt);
-                }
-                else
-                {
-                    ResetGyros();
-                }
-
-                _input.PostUpdate(_totalTimeRan, dt);
             }
+
+            // Update gyroscopes, perform WASD calculations if enabled
+            double dt = Runtime.TimeSinceLastRun.TotalSeconds;
+            _input.Update(_cockpit, _totalTimeRan);
+            if (_isWasd) ApplyWasdControls(dt);
+            else ResetGyros();
+            _input.PostUpdate(_totalTimeRan, dt);
 
             // Count non-damaged thrusters
             int numFunctionalThrusters = _thrusters.Count(x => x.IsFunctional);
@@ -535,6 +533,7 @@ namespace IngameScript
 
         void ApplyWasdControls(double dt)
         {
+            // Various settings
             Vector2D maxWasdSpeed = new Vector2D(8.0, 30.0);
             Vector2D maxWasdAccel = new Vector2D(4.0, 6.0);
             Vector2D wasdDoubletapSpeed = new Vector2D(4.0, 10.0);
@@ -580,6 +579,13 @@ namespace IngameScript
                 _wasdDesiredSpeed.X = _wasdDesiredSpeed.Y = 0;
             }
 
+            // Stop moving while landing
+            if (_landing)
+            {
+                _wasdDesiredSpeed = new Vector2D();
+            }
+
+            // Determined desired rotations, using math formulas
             double dvs = Vector3.Dot(_info.surfaceVelocity, _info.groundRight) + _wasdDesiredSpeed.X - _info.sidewaysVelocity;
             double dvf = Vector3.Dot(_info.surfaceVelocity, _info.groundForward) + _wasdDesiredSpeed.Y - _info.forwardVelocity;
 
@@ -610,8 +616,9 @@ namespace IngameScript
             desiredRoll = Clamp(-maxDesiredAngle, maxDesiredAngle, desiredRoll);
             desiredPitch = Clamp(-maxDesiredAngle, maxDesiredAngle, desiredPitch);
 
-            double rs = 20.0;
-            double ps = 20.0;
+            // Reset roll/pitch to zero when ship is moving very slowly
+            double rs = 20.0; // speed at which to roll
+            double ps = 20.0; // speed at which to pitch
 
             if (Math.Abs(dvs) < 0.005 && Math.Abs(_info.shipRoll) < 0.5)
             {
@@ -624,15 +631,19 @@ namespace IngameScript
                 ps = 2.0;
             }
 
+            // Calculate desired eulers to send to the gyroscopes
             double allowedYawSpeed = Lerp(10f, 2f, _info.horizontalSpeed / 5f + Math.Abs(_info.shipPitch / 20f) + Math.Abs(_info.shipRoll / 20f));
 
             double baseRollSpeed = Math.Sign(desiredRoll - _info.shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - _info.shipRoll) / rs));
             double basePitchSpeed = Math.Sign(desiredPitch - _info.shipPitch) * Math.Min(2.0, Math.Abs((desiredPitch - _info.shipPitch) / ps));
             double baseYawSpeed = _input._CurrentYaw * allowedYawSpeed - -_info.angularVelocity.Y;
 
+            // Adjust eulers to spin around planet-based axes instead of local axes
             Vector3 transformedSpeeds = TransformEulerDeltas(new Vector3(_info.shipPitch, 0f, _info.shipRoll),
                 new Vector3(basePitchSpeed, baseYawSpeed, baseRollSpeed),
                 _info.shipForward, _info.shipUp, _info.groundForward, _info.gravityUp);
+
+            // Send to gyros
             ApplyGyroOverride(transformedSpeeds.X, transformedSpeeds.Y, transformedSpeeds.Z, _gyros, _cockpit);
         }
 
@@ -948,12 +959,14 @@ namespace IngameScript
                     _controlling = (lines[2][0] == 'y');
                     _landing = (lines[2][1] == 'y');
                     _isHangarMode = (lines[2][2] == 'y');
+                    _isWasd = (lines[2].Length >= 4 && lines[2][3] == 'y');
                 }
                 else
                 {
                     _controlling = false;
                     _landing = false;
                     _isHangarMode = false;
+                    _isWasd = false;
                 }
 
                 // Load altitude offset
@@ -1006,6 +1019,7 @@ namespace IngameScript
             state += (_controlling ? 'y' : 'n');
             state += (_landing ? 'y' : 'n');
             state += (_isHangarMode ? 'y' : 'n');
+            state += (_isWasd ? 'y' : 'n');
 
             Me.CustomData = VERSION + '\n'                              // Line 1: version
                 + _blockGroupName + '\n' +                              // Line 2: name of block group
