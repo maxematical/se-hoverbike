@@ -505,141 +505,19 @@ namespace IngameScript
                         ps = 2.0;
                     }
 
-                    //if (Math.Abs(dvs) < 0.01) desiredRoll = dvs;
-                    //if (Math.Abs(dvf) < 0.01) desiredPitch = dvf;
-                    //if (Math.Abs(dvs) < 0.01) desiredRoll = 0;
-                    //if (Math.Abs(dvf) < 0.01) desiredPitch = 0;
+                    double allowedYawSpeed = Lerp(10f, 2f, horizontalVelocity.Length() / 5f + Math.Abs(shipPitch / 20f) + Math.Abs(shipRoll / 20f));
 
-                    //double ps = Lerp(70.0, 20.0, (desiredPitch - shipPitch) / 10.0);
-                    //double ps = 20.0;
+                    double baseRollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / rs));
+                    double basePitchSpeed = Math.Sign(desiredPitch - shipPitch) * Math.Min(2.0, Math.Abs((desiredPitch - shipPitch) / ps));
+                    double baseYawSpeed = _input._CurrentYaw * allowedYawSpeed - -angularVelocity.Y;
 
-                    double allowedYawSpeed = Lerp(10f, 2f, horizontalVelocity.Length() / 5f + Math.Abs(shipPitch / 40f) + Math.Abs(shipRoll / 40f));
-
-                    double rollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / rs));
-                    double pitchSpeed = Math.Sign(desiredPitch - shipPitch) * Math.Min(2.0, Math.Abs((desiredPitch - shipPitch) / ps));
-                    double yawSpeed = _input._CurrentYaw * allowedYawSpeed - -angularVelocity.Y; //Math.Sign(yawInput - angularVelocity.Y) * Clamp(0.0, 4.0, 16 * (Math.Abs(yawInput - angularVelocity.Y) - 0.5));
-
-                    double pitchSpeedr = pitchSpeed * Math.PI / 180.0;
-                    double rollSpeedr = rollSpeed * Math.PI / 180.0;
-                    double yawSpeedr = yawSpeed * Math.PI / 180.0;
-
-                    //Vector3 newForward = Vector3.Transform(shipForward, Quaternion.CreateFromAxisAngle(-groundRight, (float) pitchSpeedr));
-                    //Vector3 newUp = Vector3.Transform(shipUp, Quaternion.CreateFromAxisAngle(-groundRight, (float) pitchSpeedr));
-                    //double new_pitchSpeed = Math.Acos(Vector3.Dot(newForward, shipForward)) * 180 / Math.PI;
-                    //if (double.IsNaN(new_pitchSpeed))
-                    //    new_pitchSpeed = 0.0;
-                    //if (pitchSpeed < 0)
-                    //    new_pitchSpeed *= -1;
-
-                    //Quaternion q = Quaternion.CreateFromAxisAngle(shipForward, (float) rollSpeedr) *
-                    //    Quaternion.CreateFromAxisAngle(-shipRight, (float) pitchSpeedr) *
-                    //    Quaternion.CreateFromAxisAngle(shipUp, (float) yawSpeedr);
-                    //Quaternion q = Quaternion.CreateFromAxisAngle(shipRight, (float) pitchSpeedr) *
-                    //    Quaternion.CreateFromAxisAngle(Vector3.Forward, (float) rollSpeedr);
-                    //Quaternion.CreateFromAxisAngle(gravdown)
-
-                    //Quaternion q = Quaternion.CreateFromAxisAngle(Vector3.Right, (float) pitchSpeedr);
-                    //shipForward.Normalize();
-                    //shipUp.Normalize();
-                    //shipRight.Normalize();
-                    //Quaternion.Inverse(Quaternion.CreateFromForwardUp(shipForward, shipUp));
-
-                    // TODO    // float axisangleangle = groundForward;
-
-                    // good, but only rotates pitch // Quaternion q = Quaternion.CreateFromAxisAngle(groundRight, (float) pitchSpeedr);
-
-                    float yaw;
-                    {
-                        // https://stackoverflow.com/a/5190354
-                        Vector3 yaw0Forward = Vector3.Transform(Vector3.Forward, Quaternion.CreateFromAxisAngle(-gravityDown, 0f));
-                        yaw = (float) Math.Acos(Vector3.Dot(groundForward, yaw0Forward)) * 180f / (float) Math.PI;
-
-                        Vector3 cross = Vector3.Cross(groundForward, yaw0Forward);
-                        if (Vector3.Dot(-gravityDown, cross) > 0)
-                            yaw = 360f - yaw;
-                    }
-                    //Yaw is good(I think). Verify by checking the following is ~1: Vector3.Dot(groundForward, Vector3.Transform(Vector3.Forward, Q.AxisAngle(gravup, yawrad)))
-
-                    //Naive yaw calculation, from 0-pi rad: // float yaw = (float)Math.Acos(Vector3.Dot(groundForward, Vector3.Transform(Vector3.Forward, Quaternion.CreateFromAxisAngle(gravityDown, 0f))));
-
-                    Quaternion q = //Quaternion.CreateFromAxisAngle(Vector3.Right, (float) pitchSpeedr) *
-                                   //Quaternion.CreateFromAxisAngle(Vector3.Right, shipPitch * (float) Math.PI / 180f    * 00000) *
-                                   // not is work Quaternion.CreateFromAxisAngle(-gravityDown, yaw * (float) Math.PI / 180f/*(float) yawSpeedr*/)
-                        Quaternion.CreateFromAxisAngle(Vector3.Forward, ToRad(shipRoll) + (float) rollSpeedr) *
-                        Quaternion.CreateFromAxisAngle(Vector3.Right, ToRad(shipPitch) + (float) pitchSpeedr) *
-                        Quaternion.CreateFromAxisAngle(Vector3.Up, (float) yawSpeedr) *
-                        Quaternion.Inverse(Quaternion.CreateFromForwardUp(shipForward, shipUp)) *
-                        Quaternion.CreateFromForwardUp(groundForward, -gravityDown)
-                        ;
-                        //Quaternion.Inverse(Quaternion.CreateFromForwardUp(shipForward, shipUp));
-                    Vector3 rotateAxis;
-                    float rotateAngle;
-                    q.GetAxisAngle(out rotateAxis, out rotateAngle);
-//                    rotateAxis = Vector3.TransformNormal(rotateAxis, Matrix.Transpose(_cockpit.WorldMatrix.GetOrientation()));
-
-                    // When using Quaternion.CreateFromAxisAngle, the quaternion is rotated such that:
-                    // - Right axis is parallel with the axis provided
-                    // - Forward and up axes are perpendicular to the axis provided
-                    // E.g. if "gravityDown" is provided as the axis, then right axis will be gravity down, forward/right axes will be perpendicular to gravity
-                    _cockpit.CustomData = FormatGPS(_cockpit.GetPosition(), "scr Cockpit") + '\n' +
-                        FormatGPS(_cockpit.GetPosition() + 5f * groundForward, "scr Ground Forward") + '\n' +
-                        FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Forward, q), "scr Quaternion Forward Axis") + '\n' +
-                        FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Right, q), "scr Quaternion Right Axis") + '\n' +
-                        FormatGPS(_cockpit.GetPosition() + 5f * Vector3.Transform(Vector3.Up, q), "scr Quaternion Up Axis") + '\n' +
-                        '\n' +
-                        "Yaw: " + yaw.ToString("F2") + '\n' +
-                        "Dot(GroundForward, AngleAxis(gravup,yaw) * Vector3.Forward) (should be ~1): " + Vector3.Dot(groundForward, Vector3.Transform(Vector3.Forward,
-                            Quaternion.CreateFromAxisAngle(-gravityDown, yaw * (float) Math.PI / 180f)
-                        )).ToString("F2") + '\n' + // WORKS!
-                        "Should be almost exactly 0: " + Vector3.Dot(gravityDown, Vector3.Transform(Vector3.Forward,
-                            Quaternion.CreateFromForwardUp(groundForward, -gravityDown)
-                        )).ToString("F4") + '\n' +
-                        "Euler deltas: " + GetEulerAngles(rotateAxis,rotateAngle) + '\n' + // not sure what this should be yet
-                        // vvv Doesn't work!
-                        "Dot(ShipForward, q * Vector3.Forward) (should be ~1): " + Vector3.Dot(shipForward, Vector3.Transform(Vector3.Forward, q)).ToString("F2") + '\n';
-
-                    //Vector3 new_speeds = QuaternionToEuler(
-                    //    Quaternion.CreateFromAxisAngle(Vector3.Up, (float) yawSpeedr) *
-                    //    Quaternion.CreateFromAxisAngle(Vector3.Left, (float) pitchSpeedr) *
-                    //    Quaternion.CreateFromAxisAngle(Vector3.Forward, (float) rollSpeedr) *
-
-                    //    );
-                    Vector3 new_speeds = -GetEulerAngles(rotateAxis, rotateAngle) * 5;
-                    double new_pitchSpeed = -180.0 / Math.PI * new_speeds.Z * 0.2;
-                    double new_yawSpeed   = -180.0 / Math.PI * new_speeds.Y * 0.2;
-                    double new_rollSpeed  = 180.0 / Math.PI * new_speeds.X * 0.2;
-
-                    // better but doesnt really work // double new_pitchSpeed = TransformRotationSpeed(Quaternion.CreateFromAxisAngle(groundRight, (float) pitchSpeedr), 2);
-                    // better but doesnt really work // double new_yawSpeed =TransformRotationSpeed(Quaternion.CreateFromAxisAngle(-gravityDown, (float) yawSpeedr), 1);
-                    // better but doesnt really work // double new_rollSpeed = -TransformRotationSpeed(Quaternion.CreateFromAxisAngle(groundForward, (float) rollSpeedr), 0);
-
-                    //Vector3 newRight = Vector3.Transform(shipRight, Quaternion.CreateFromAxisAngle(groundForward, (float) rollSpeed * (float) Math.PI / 180f));
-                    //double new_rollSpeed = Math.Acos(Vector3.Dot(newRight, shipRight)) * 180 / Math.PI;
-                    //if (double.IsNaN(new_rollSpeed))
-                    //    new_rollSpeed = 0.0;
-                    //if (rollSpeed < 0)
-                    //    new_rollSpeed *= -1;
-
-                    //Quaternion cockpitQuaternion;
-                    //_cockpit.Orientation.GetQuaternion(out cockpitQuaternion);
-                    //Quaternion.
-                    //Quaternion q = Quaternion.Multiply(Quaternion.CreateFromAxisAngle(shipForward, (float)rollSpeed), Quaternion.Inverse(cockpitQuaternion));'
-                    //Matrix cockpitMatrix;
-                    //_cockpit.Orientation.GetMatrix(out cockpitMatrix);
-                    //ApplyGyroOverride(0.0, 0.l0, q.)
-
-                    ApplyGyroOverride(new_pitchSpeed, new_yawSpeed, new_rollSpeed, _gyros, _cockpit);
-                    //ApplyGyroOverride(pitchSpeed, yawSpeed, rollSpeed, _gyros, _cockpit);
-                    _temporaryMessage = new LcdMessage(pitchSpeed.ToString("F3") + "\n" + new_pitchSpeed.ToString("F3"), (float) _totalTimeRan, 1000f);
-                    //_temporaryMessage = new LcdMessage(Vector3.Dot(_cockpit.WorldMatrix.Forward, shipForward).ToString("F3"), (float) _totalTimeRan, 1000f);
+                    Vector3 transformedSpeeds = TransformEulerDeltas(new Vector3(shipPitch, 0f, shipRoll),
+                        new Vector3(basePitchSpeed, baseYawSpeed, baseRollSpeed),
+                        shipForward, shipUp, groundForward, -gravityDown);
+                    ApplyGyroOverride(transformedSpeeds.X, transformedSpeeds.Y, transformedSpeeds.Z, _gyros, _cockpit);
                 }
                 else
                 {
-                    if(false)
-                    {
-                        isManualInput = true;
-                        accel = Lerp(minAccel, maxAccel, 0.5f + 0.5f * _cockpit.MoveIndicator.Y);
-                    }
                     ResetGyros();
                 }
 
@@ -660,12 +538,6 @@ namespace IngameScript
                 float thrustOverride = totalThrust / efficiency / thrustAlignment / numFunctionalThrusters;
                 thrust.ThrustOverride = Math.Max(thrustOverride, 0.0000000001f);
             }
-
-            //// Turn off thrusters if we have landed
-            //foreach (IMyThrust thrust in _thrusters)
-            //{
-            //    thrust.Enabled = !(_landing && altitude < LANDING_ALTITUDE_THRESHOLD);
-            //}
 
             // Update LCD (if any)
             foreach (IMyTextSurface display in _displays)
@@ -709,14 +581,6 @@ namespace IngameScript
                 // Write text onto display
                 display.WriteText(line1 + '\n' + line2 + '\n' + line3);
 
-                // Debug
-                {
-                    //Vector3 vec = -_cockpit.MoveIndicator;
-                    //display.WriteText(vec.X.ToString("F2") + "\n" +
-                    //    vec.Y.ToString("F2") + "\n" +
-                    //    vec.Z.ToString("F2"));
-                }
-
                 // If we would have normally used raycasted altitude, but the ship is tilted so far that we need to use elevation
                 // altitude instead, this can result in inaccuracies (e.g. didn't detect the grid we are hovering over)
                 // Warn the user if we would normally use raycasted altitude but can't/almost can't because we are tilted too far.
@@ -747,25 +611,33 @@ namespace IngameScript
                 else if (sidewaysVelocity < -2f && !_isHangarMode) display.BackgroundColor = new Color(0, (int) Math.Min(100, -sidewaysVelocity * 10f), 0);
                 // Otherwise, set background to black (transparent)
                 else display.BackgroundColor = Color.Black;
-
-
-                display.FontColor = new Color(100, 100, 255);
             }
         }
         
-        float TransformRotationSpeed(Quaternion rotate, int eulerComponent, bool convertToDegrees = true)
+        // Transforms desired euler angles to change so that they are relative to planet axes rather than local axes.
+        // For example, normally applying a yaw rotation while pitch is non-zero will cause a change in the ship's roll.
+        // This adjusts the euler angles so this does not happen.
+        Vector3 TransformEulerDeltas(Vector3 shipEulers, Vector3 deltas,
+            Vector3 shipForward, Vector3 shipUp, Vector3 groundForward, Vector3 gravityUp)
         {
-            Vector3 axis;
-            float angle;
-            rotate.GetAxisAngle(out axis, out angle);
-            axis = Vector3.TransformNormal(axis, MatrixD.Invert(_cockpit.WorldMatrix.GetOrientation()));
+            float shipPitch = ToRad(shipEulers.X);
+            float shipRoll = ToRad(shipEulers.Z);
 
-            Vector3 eulers = GetEulerAngles(axis, angle);
-            float result = eulers.GetDim(eulerComponent);
+            float pitchSpeed = ToRad(deltas.X);
+            float yawSpeed  = ToRad(deltas.Y);
+            float rollSpeed = ToRad(deltas.Z);
 
-            if (convertToDegrees)
-                result *= 180f / (float) Math.PI;
-            return result;
+            Quaternion q =
+                        Quaternion.CreateFromAxisAngle(Vector3.Forward, shipRoll + rollSpeed) *
+                        Quaternion.CreateFromAxisAngle(Vector3.Right, shipPitch + pitchSpeed) *
+                        Quaternion.CreateFromAxisAngle(Vector3.Up, yawSpeed) *
+                        Quaternion.Inverse(Quaternion.CreateFromForwardUp(shipForward, shipUp)) *
+                        Quaternion.CreateFromForwardUp(groundForward, gravityUp);
+            Vector3 rotateAxis;
+            float rotateAngle;
+            q.GetAxisAngle(out rotateAxis, out rotateAngle);
+
+            return -GetEulerAngles(rotateAxis, rotateAngle) * 180f / (float) Math.PI;
         }
 
         Vector3 GetEulerAngles(Vector3 axis, float radians)
@@ -783,21 +655,7 @@ namespace IngameScript
                 (float) Math.Atan2(y * sinA - x * z * (1 - cosA), 1 - (y * y + z * z) * (1 - cosA)),
                 (float) Math.Atan2(x * sinA - y * z * (1 - cosA), 1 - (x * x + z * z) * (1 - cosA)));
         }
-
-        Vector3 QuaternionToEuler(Quaternion q)
-        {
-            float x = q.X;
-            float y = q.Y;
-            float z = q.Z;
-            float w = q.W;
-            float x2 = x * x;
-            float y2 = y * y;
-            float z2 = z * z;
-            return new Vector3((float) Math.Asin(2 * x * y + 2 * z * w),            // attitude
-                (float) Math.Atan2(2 * y * w - 2 * x * z, 1 - 2 * y2 - 2 * z2),     // heading
-                (float) Math.Atan2(2 * x * w - 2 * y * z, 1 - 2 * x2 - 2 * z2));    // bank
-        }
-
+        
         ValueTuple<float, bool> CalculateDesiredAccel(double altitude, double minAltitude, double maxAltitude,
             double slopeVelocity, float horizontalVelocity,
             float minAccel, float safeAccel, float maxAccel)
@@ -805,11 +663,8 @@ namespace IngameScript
             if (Math.Abs(_cockpit.MoveIndicator.Y) > 0.1f)
             {
                 // Handle when the user presses Space or C
-                float clampedInput = 0.5f + 0.5f * _cockpit.MoveIndicator.Y;
-                if (clampedInput < -1) clampedInput = -1f;
-                if (clampedInput > 1) clampedInput = 1f;
-
-                float accel = minAccel + (maxAccel - minAccel) * clampedInput;
+                float input = 0.5f + 0.5f * _cockpit.MoveIndicator.Y;
+                float accel = Lerp(minAccel, maxAccel, input);
                 return new ValueTuple<float, bool>(accel, true);
             }
             else if (_landing && horizontalVelocity < 0.5f)
