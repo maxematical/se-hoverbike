@@ -58,12 +58,12 @@ namespace IngameScript
 
         // The vertical speed that the script will try to maintain when landing.
         // Default value: 3.5
-        private const double LANDING_VELOCITY = 3.5;
+        private const double LANDING_VELOCITY = 2.5;
 
         // If the ship is landing, the script will automatically turn off all the thrusters when the ship's altitude is at or
         // below this number.
         // Default value: 2.0
-        private const double LANDING_ALTITUDE_THRESHOLD = 2.0;
+        private const double LANDING_ALTITUDE_THRESHOLD = 1.0;
 
         // The minimum altitude the script will try to maintain while in hangar mode, in meters. Hangar mode can be activated by
         // running the argument "Hangar" and is turned off by running "Auto".
@@ -121,6 +121,10 @@ namespace IngameScript
         // Default value: 5.0
         private const double DISPLAY_STOPDIST_THRESHOLD_SPEED = 5.0;
 
+        // The script will only update once every X frames.
+        // Defualt value: 2
+        private const int UPDATE_INTERVAL = 2;
+
         // ==============================================================================
         // DEBUG CONFIGURATION
         // These are likely not useful unless you're editing the script or told to change
@@ -149,18 +153,22 @@ namespace IngameScript
         private float _bottomCamerasMaxAngle;
         private List<IMyGyro> _gyros;
         private List<IMyTextSurface> _displays;
+        private IMyMotorStator _dockingRotor;
 
         // Control variables (public to save state between script runs)
         private bool _controlling;
         private bool _landing;
         private bool _isHangarMode;
-        private bool _isWasd;
+        private Vector3? _dockingLocation;
 
         private double _altitudeOffset;
-        private Vector2D _wasdDesiredSpeed;
+        private Vector2D _autopilotDesiredSpeed;
 
         // Display variables
         private LcdMessage? _temporaryMessage;
+        private string _echoMessage;
+
+        private bool _hasEchoed;
 
         // Flight subsystems
         private Info _info;
@@ -171,10 +179,13 @@ namespace IngameScript
         private PerformanceStats _perf;
 
         private double _totalTimeRan;
+        private int _nUpdates;
+        private double _dt;
 
         public Program()
         {
             _perf = new PerformanceStats();
+            _nUpdates = 0;
             LoadCustomData();
             Init();
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
@@ -187,18 +198,31 @@ namespace IngameScript
 
         public void Main(string argument, UpdateType updateSource)
         {
+            _hasEchoed = false;
+
             // Handle continuous update
             if ((updateSource & UpdateType.Update1) != 0)
             {
+                _dt += Runtime.TimeSinceLastRun.TotalSeconds;
+                if (_nUpdates++ % UPDATE_INTERVAL > 0)
+                    return;
+
+                if (_echoMessage != null)
+                {
+                    Echo(_echoMessage, false);
+                }
                 if (_initialized && _controlling)
                 {
                     DoUpdate();
-                    Echo($"Performance stats:\n" +
-                        $"- current runtime: {Runtime.LastRunTimeMs * 1000:F2}ms\n" +
-                        $"- average runtime: {_perf.avgRuntimeMs * 1000:F2}ms\n" +
-                        $"- maximum runtime: {_perf.maxRuntimeMs * 1000:F2}ms");
+                    Echo($"---\n" +
+                        $"Performance stats:\n" +
+                        $"- current runtime: {Runtime.LastRunTimeMs:F2}ms\n" +
+                        $"- average runtime: {_perf.avgRuntimeMs:F2}ms\n" +
+                        $"- maximum runtime: {_perf.maxRuntimeMs:F2}ms", false);
+                    _perf.Update(Runtime.LastRunTimeMs, _totalTimeRan);
                 }
-                _totalTimeRan += Runtime.TimeSinceLastRun.TotalSeconds;
+                _totalTimeRan += _dt;
+                _dt = 0.0;
                 return;
             }
 
@@ -243,7 +267,7 @@ namespace IngameScript
                 _controlling = true;
                 _landing = false;
                 _isHangarMode = false;
-                _isWasd = false;
+                _dockingLocation = null;
             }
             if (argument == "stop")
             {
@@ -259,16 +283,15 @@ namespace IngameScript
             {
                 _landing = true;
                 _controlling = true;
-                _isWasd = true;
-
-                _wasdDesiredSpeed = new Vector2D(0.0, 0.0);
+                _dockingLocation = null;
             }
             if (argument == "hangar")
             {
                 _controlling = true;
                 _landing = false;
                 _isHangarMode = true;
-                _isWasd = true;
+                _autopilotDesiredSpeed = new Vector2D();
+                _dockingLocation = null;
             }
             if (argument == "higher" || argument == "lower" || argument == "checkoffset" || argument == "offset0")
             {
@@ -283,6 +306,23 @@ namespace IngameScript
 
                 _altitudeOffset = Clamp(0f, MAX_ALTITUDE_OFFSET, _altitudeOffset);
                 _temporaryMessage = new LcdMessage($"+{_altitudeOffset.ToString("F1")}m", (float) _totalTimeRan, 2.0f);
+            }
+            if (argument.StartsWith("dock "))
+            {
+                Vector3? point = TryParseGPS(argument.Substring("dock ".Length));
+                if (_dockingRotor == null)
+                {
+                    Echo("No docking rotor");
+                }
+                else if (point != null)
+                {
+                    _dockingLocation = point;
+                    Echo("Set docking location to the provided GPS point. Navigating to GPS.");
+                }
+                else
+                {
+                    Echo("Invalid GPS point. Please copy the GPS to clipboard and try again.");
+                }
             }
         }
 
@@ -364,17 +404,6 @@ namespace IngameScript
             // Determine radius of sea level
             float sealevelRadius = 60000f; // TODO Configurable
 
-            // Determine current altitude
-            AltitudeData? altitudeData = _raycastAltitudeProvider.GetAltitude(_slopeMeasurer, _info) ??
-                _elevationAltitudeProvider.GetAltitude(_slopeMeasurer, _info);
-            if (!altitudeData.HasValue)
-            {
-                Echo("Couldn't determine the ship's altitude");
-                return;
-            }
-            float altitude = altitudeData.Value.altitude;
-            float groundHeight = altitudeData.Value.groundHeight;
-
             // Update info, to be used by different subsystems
             _info.angularVelocity = angularVelocity;
             _info.cockpit = _cockpit;
@@ -393,9 +422,21 @@ namespace IngameScript
             _info.shipUp = shipUp;
             _info.sidewaysVelocity = sidewaysVelocity;
             _info.slopeRate = _slopeMeasurer._Slope * horizontalVelocity.Length();
-            _info.surfaceVelocity = altitudeData.Value.surfaceVelocity;
             _info.time = (float) _totalTimeRan;
             _info.verticalVelocity = verticalVelocity;
+
+            // Determine current altitude
+            AltitudeData? altitudeData = _raycastAltitudeProvider.GetAltitude(_slopeMeasurer, _info) ??
+                _elevationAltitudeProvider.GetAltitude(_slopeMeasurer, _info);
+            if (!altitudeData.HasValue)
+            {
+                Echo("Couldn't determine the ship's altitude");
+                return;
+            }
+            float altitude = altitudeData.Value.altitude;
+            float groundHeight = altitudeData.Value.groundHeight;
+
+            _info.surfaceVelocity = altitudeData.Value.surfaceVelocity;
 
             // TODO: Enable forward scanning
             //DoScanAhead(velocity, gravityDown, altitude);
@@ -434,12 +475,40 @@ namespace IngameScript
                 isManualInput = result.b;
             }
 
-            // Update gyroscopes, perform WASD calculations if enabled
-            double dt = Runtime.TimeSinceLastRun.TotalSeconds;
+            // Land if there's no one in the cockpit!
+            if (!_cockpit.IsUnderControl && _info.horizontalSpeed > 2.0f)
+                _landing = true;
+
+            // Determine whether we need autopilot
             _input.Update(_cockpit, _totalTimeRan);
-            if (_isWasd) ApplyWasdControls(dt);
+            bool isAutopilot = false;
+            bool displayAutopilotSpeed = false;
+            bool displayAsDocking = false;
+            if (_dockingLocation != null && _dockingRotor != null)
+            {
+                // Autopilot to the docking location
+                isAutopilot = true;
+                displayAsDocking = true;
+                accel = UpdateDockingAutopilot();
+            }
+            else if (_landing)
+            {
+                // Stop the hoverbike
+                isAutopilot = true;
+                _autopilotDesiredSpeed = new Vector2D();
+            }
+            else if (_isHangarMode)
+            {
+                // We are in WASD mode
+                isAutopilot = true;
+                displayAutopilotSpeed = true;
+                UpdateWasdControls();
+            }
+            _input.PostUpdate(_totalTimeRan, _dt);
+
+            // Update gyroscopes, perform autopilot calculations if enabled
+            if (isAutopilot) accel = ApplyAutopilotTurning(accel);
             else ResetGyros();
-            _input.PostUpdate(_totalTimeRan, dt);
 
             // Count non-damaged thrusters
             int numFunctionalThrusters = _thrusters.Count(x => x.IsFunctional);
@@ -464,8 +533,8 @@ namespace IngameScript
                     continue;
 
                 // Determine first two lines to write
-                double dispForwardVelocity = _wasdDesiredSpeed.Y; // forwardVelocity;
-                double dispSidewaysVelocity = _wasdDesiredSpeed.X; // sidewaysVelocity;
+                double dispForwardVelocity  = displayAutopilotSpeed ? _autopilotDesiredSpeed.Y : forwardVelocity;
+                double dispSidewaysVelocity = displayAutopilotSpeed ? _autopilotDesiredSpeed.X : sidewaysVelocity;
                 string line1 = (Math.Abs(dispForwardVelocity) > 5) ? dispForwardVelocity.ToString("F0") : dispForwardVelocity.ToString("F1");
                 string line2 = (Math.Abs(dispSidewaysVelocity) > 5) ? dispSidewaysVelocity.ToString("F0") : dispSidewaysVelocity.ToString("F1");
 
@@ -474,6 +543,10 @@ namespace IngameScript
                 if (_temporaryMessage.HasValue && (_totalTimeRan - _temporaryMessage.Value.initTime) < _temporaryMessage.Value.duration)
                 {
                     line3 = _temporaryMessage.Value.message;
+                }
+                else if (displayAsDocking)
+                {
+                    line3 = "DOCK";
                 }
                 else if (_landing)
                 {
@@ -531,69 +604,17 @@ namespace IngameScript
             }
         }
 
-        void ApplyWasdControls(double dt)
+        float ApplyAutopilotTurning(float accel)
         {
-            // Various settings
-            Vector2D maxWasdSpeed = new Vector2D(8.0, 30.0);
-            Vector2D maxWasdAccel = new Vector2D(4.0, 6.0);
-            Vector2D wasdDoubletapSpeed = new Vector2D(4.0, 10.0);
-            double wasdSpeedCutoff = 2.0;
-            double outOfCockpitCutoff = 2.0;
-
-            // Update desired speed
-            // Increase/decrease speed when keys pressed, faster if the key has been held down for at least 0.5s
-            _wasdDesiredSpeed.X += maxWasdAccel.X * (_input._InputDuration.X > 0.5 ? 1.0 : 0.5) * _input._Current.X * dt;
-            _wasdDesiredSpeed.Y += maxWasdAccel.Y * (_input._InputDuration.Y > 0.5 ? 1.0 : 0.5) * _input._Current.Y * dt;
-
-            // Reset speed when a) it is +-2m/s or less, b) pressed key in the opposite direction last tick, and c) not pressing key anymore
-            if (_input._Last.X != 0 && Math.Sign(_input._Last.X) != Math.Sign(_wasdDesiredSpeed.X) &&
-                    _input._Current.X == 0 && Math.Abs(_wasdDesiredSpeed.X) < wasdSpeedCutoff)
-                _wasdDesiredSpeed.X = 0.0;
-            if (_input._Last.Y != 0 && Math.Sign(_input._Last.Y) != Math.Sign(_wasdDesiredSpeed.Y) &&
-                    _input._Current.Y == 0 && Math.Abs(_wasdDesiredSpeed.Y) < wasdSpeedCutoff)
-                _wasdDesiredSpeed.Y = 0.0;
-
-            // Double tapping gives either a speed boost if done in the same direction as current velocity, or resets speed for the opposite direction
-            if (_input.PopDoublePress(0, _totalTimeRan))
-            {
-                _wasdDesiredSpeed.X = (Math.Sign(_input._Actual.X) == Math.Sign(_wasdDesiredSpeed.X)) ?
-                    wasdDoubletapSpeed.X * Math.Sign(_input._Actual.X) :
-                    0.0;
-            }
-            if (_input.PopDoublePress(1, _totalTimeRan))
-            {
-                _wasdDesiredSpeed.Y = (Math.Sign(_input._Actual.Y) == Math.Sign(_wasdDesiredSpeed.Y)) ?
-                    wasdDoubletapSpeed.Y * Math.Sign(_input._Actual.Y) :
-                    0.0;
-            }
-
-            // Cap desired speed to 6m/s horizontal, 10m/s forward
-            if (Math.Abs(_wasdDesiredSpeed.X) > maxWasdSpeed.X)
-                _wasdDesiredSpeed.X = maxWasdSpeed.X * Math.Sign(_wasdDesiredSpeed.X);
-            if (Math.Abs(_wasdDesiredSpeed.Y) > maxWasdSpeed.Y)
-                _wasdDesiredSpeed.Y = maxWasdSpeed.Y * Math.Sign(_wasdDesiredSpeed.Y);
-
-            // Stop moving if player is out of cockpit and moving too fast
-            if (!_cockpit.IsUnderControl && (Math.Abs(_wasdDesiredSpeed.X) > outOfCockpitCutoff || Math.Abs(_wasdDesiredSpeed.Y) > outOfCockpitCutoff))
-            {
-                _wasdDesiredSpeed.X = _wasdDesiredSpeed.Y = 0;
-            }
-
-            // Stop moving while landing
-            if (_landing)
-            {
-                _wasdDesiredSpeed = new Vector2D();
-            }
-
             // Determined desired rotations, using math formulas
-            double dvs = Vector3.Dot(_info.surfaceVelocity, _info.groundRight) + _wasdDesiredSpeed.X - _info.sidewaysVelocity;
-            double dvf = Vector3.Dot(_info.surfaceVelocity, _info.groundForward) + _wasdDesiredSpeed.Y - _info.forwardVelocity;
+            double dvs = Vector3.Dot(_info.surfaceVelocity, _info.groundRight) + _autopilotDesiredSpeed.X - _info.sidewaysVelocity;
+            double dvf = Vector3.Dot(_info.surfaceVelocity, _info.groundForward) + _autopilotDesiredSpeed.Y - _info.forwardVelocity;
 
             double desiredRoll = 0.0;
             double desiredPitch = 0.0;
             double maxDesiredAngle = 20.0;
 
-            if (Math.Abs(dvs) > 0.005)
+            if (Math.Abs(dvs) > 0.01)
             {
                 double r1 = 10.0;
                 double t1 = 2.0;
@@ -602,7 +623,7 @@ namespace IngameScript
                 desiredRoll = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvs) / (g * t1))) * 180.0 / Math.PI;
                 desiredRoll *= Math.Sign(dvs);
             }
-            if (Math.Abs(dvf) > 0.005 || true)
+            if (Math.Abs(dvf) > 0.01)
             {
                 double r1 = 10.0;
                 double t1 = 1.5;
@@ -610,7 +631,6 @@ namespace IngameScript
 
                 desiredPitch = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvf) / (g * t1))) * 180.0 / Math.PI;
                 desiredPitch *= -Math.Sign(dvf);
-                _temporaryMessage = new LcdMessage((desiredPitch - _info.shipPitch).ToString("F3"), (float) _totalTimeRan, 10000);
             }
 
             desiredRoll = Clamp(-maxDesiredAngle, maxDesiredAngle, desiredRoll);
@@ -645,6 +665,77 @@ namespace IngameScript
 
             // Send to gyros
             ApplyGyroOverride(transformedSpeeds.X, transformedSpeeds.Y, transformedSpeeds.Z, _gyros, _cockpit);
+            return accel;
+        }
+
+        void UpdateWasdControls()
+        {
+            // Various settings
+            Vector2D maxWasdSpeed = new Vector2D(8.0, 30.0);
+            Vector2D maxWasdAccel = new Vector2D(4.0, 6.0);
+            Vector2D wasdDoubletapSpeed = new Vector2D(4.0, 10.0);
+            double wasdSpeedCutoff = 2.0;
+
+            // Update desired speed
+            // Increase/decrease speed when keys pressed, faster if the key has been held down for at least 0.5s
+            _autopilotDesiredSpeed.X += maxWasdAccel.X * (_input._InputDuration.X > 0.5 ? 1.0 : 0.5) * _input._Current.X * _dt;
+            _autopilotDesiredSpeed.Y += maxWasdAccel.Y * (_input._InputDuration.Y > 0.5 ? 1.0 : 0.5) * _input._Current.Y * _dt;
+
+            // Reset speed when a) it is +-2m/s or less, b) pressed key in the opposite direction last tick, and c) not pressing key anymore
+            if (_input._Last.X != 0 && Math.Sign(_input._Last.X) != Math.Sign(_autopilotDesiredSpeed.X) &&
+                    _input._Current.X == 0 && Math.Abs(_autopilotDesiredSpeed.X) < wasdSpeedCutoff)
+                _autopilotDesiredSpeed.X = 0.0;
+            if (_input._Last.Y != 0 && Math.Sign(_input._Last.Y) != Math.Sign(_autopilotDesiredSpeed.Y) &&
+                    _input._Current.Y == 0 && Math.Abs(_autopilotDesiredSpeed.Y) < wasdSpeedCutoff)
+                _autopilotDesiredSpeed.Y = 0.0;
+
+            // Double tapping gives either a speed boost if done in the same direction as current velocity, or resets speed for the opposite direction
+            if (_input._IsDoublepressX)
+            {
+                _autopilotDesiredSpeed.X = (Math.Sign(_input._Actual.X) == Math.Sign(_autopilotDesiredSpeed.X)) ?
+                    wasdDoubletapSpeed.X * Math.Sign(_input._Actual.X) :
+                    0.0;
+            }
+            if (_input._IsDoublepressY)
+            {
+                _autopilotDesiredSpeed.Y = (Math.Sign(_input._Actual.Y) == Math.Sign(_autopilotDesiredSpeed.Y)) ?
+                    wasdDoubletapSpeed.Y * Math.Sign(_input._Actual.Y) :
+                    0.0;
+            }
+
+            // Cap desired speed
+            _autopilotDesiredSpeed.X = Clamp(-maxWasdSpeed.X, maxWasdSpeed.X, _autopilotDesiredSpeed.X);
+            _autopilotDesiredSpeed.Y = Clamp(-maxWasdSpeed.Y, maxWasdSpeed.Y, _autopilotDesiredSpeed.Y);
+        }
+
+        float UpdateDockingAutopilot()
+        {
+            Vector3 dockWith = _dockingLocation.Value + 0.05f * _info.gravityUp;
+            Vector3 delta = dockWith - _dockingRotor.GetPosition();
+
+            float verticalDelta = Vector3.Dot(delta, _info.gravityUp);
+            Vector3 horizontalDelta = delta - verticalDelta * _info.gravityUp;
+
+            float desiredVerticalDelta = Lerp(0f, -2.5f, horizontalDelta.Length() / 0.5f + _info.horizontalSpeed / 0.2f);
+            float desiredVerticalSpeed = -Math.Sign(desiredVerticalDelta - verticalDelta) * Math.Min(1f, Math.Abs(desiredVerticalDelta - verticalDelta));
+            float accel = (desiredVerticalSpeed - _info.verticalVelocity);
+
+            Vector3 localHorizontalDelta = new Vector3(Vector3.Dot(_info.groundRight, horizontalDelta), 0f, Vector3.Dot(_info.groundForward, horizontalDelta));
+            _autopilotDesiredSpeed.X = Math.Sign(localHorizontalDelta.X) * Clamp(0f, 10f, Math.Abs(localHorizontalDelta.X / 2f));
+            _autopilotDesiredSpeed.Y = Math.Sign(localHorizontalDelta.Z) * Clamp(0f, 10f, Math.Abs(localHorizontalDelta.Z / 2f));
+
+            // Try to attach
+            // For some reason, this makes the rotor unusable
+            if (horizontalDelta.LengthSquared() < 0.0001f && verticalDelta < 0.1f && false)
+            {
+                _dockingRotor.Attach();
+            }
+            if (_dockingRotor.IsAttached)
+            {
+                _dockingLocation = null;
+            }
+
+            return accel;
         }
 
         // Transforms desired euler angles to change so that they are relative to planet axes rather than local axes.
@@ -670,7 +761,8 @@ namespace IngameScript
             float rotateAngle;
             q.GetAxisAngle(out rotateAxis, out rotateAngle);
 
-            return -GetEulerAngles(rotateAxis, rotateAngle) * 180f / (float) Math.PI;
+            Vector3 r = GetEulerAngles(rotateAxis, rotateAngle);
+            return new Vector3(ToDeg(r.Z), ToDeg(r.Y), -ToDeg(r.X));
         }
 
         Vector3 GetEulerAngles(Vector3 axis, float radians)
@@ -700,20 +792,17 @@ namespace IngameScript
                 float accel = Lerp(minAccel, maxAccel, input);
                 return new ValueTuple<float, bool>(accel, true);
             }
-            else if (_landing && horizontalVelocity < 0.5f)
+            else if (_landing && altitude < LANDING_ALTITUDE_THRESHOLD)
             {
-                // Handle when we want to land
-                if (altitude < LANDING_ALTITUDE_THRESHOLD)
-                {
-                    // Cut off thrusters below a certain altitude
-                    return new ValueTuple<float, bool>(minAccel, false);
-                }
-                else
-                {
-                    // Otherwise, we want to lower at the speed designated by LANDING_VELOCITY
-                    float accel = Clamp(minAccel, maxAccel, (float) (-LANDING_VELOCITY - slopeVelocity));
-                    return new ValueTuple<float, bool>(accel, false);
-                }
+                // When landing, cut off thrusters below a certain altitude
+                return new ValueTuple<float, bool>(minAccel, false);
+            }
+            else if (_landing && (horizontalVelocity < 0.5f || altitude < 2 * LANDING_ALTITUDE_THRESHOLD))
+            {
+                // We are landing, and aren't moving too much or near enough to the ground that it doesn't matter
+                // Lower the ship at the speed designated by LANDING_VELOCITY
+                float accel = Clamp(minAccel, maxAccel, (float) (-LANDING_VELOCITY - slopeVelocity));
+                return new ValueTuple<float, bool>(accel, false);
             }
             else if (altitude < minAltitude)
             {
@@ -933,7 +1022,18 @@ namespace IngameScript
             // Initialize gyros
             _gyros = new List<IMyGyro>();
             group.GetBlocksOfType(_gyros);
+            if (_gyros.Count == 0)
+                Echo("Note: No gyros were found in the block group. If you would like to use WASD Controls or Auto-Dock, " +
+                    "add the gyroscopes into the block group.");
 
+            // Initialize rotor
+            List<IMyMotorStator> rotorList = new List<IMyMotorStator>();
+            group.GetBlocksOfType(rotorList);
+            if (rotorList.Count > 1)
+                Echo("Warning: Multiple docking rotors were added to the block group, but only one of them will be used for docking.");
+            _dockingRotor = rotorList.Count > 0 ? rotorList[0] : null;
+
+            // Setup subsystems
             _info = new Info();
             _slopeMeasurer = new SlopeMeasurer();
             _raycastAltitudeProvider = new RaycastAltitudeProvider(_bottomCameras, _cockpit.Orientation.Forward);
@@ -959,14 +1059,12 @@ namespace IngameScript
                     _controlling = (lines[2][0] == 'y');
                     _landing = (lines[2][1] == 'y');
                     _isHangarMode = (lines[2][2] == 'y');
-                    _isWasd = (lines[2].Length >= 4 && lines[2][3] == 'y');
                 }
                 else
                 {
                     _controlling = false;
                     _landing = false;
                     _isHangarMode = false;
-                    _isWasd = false;
                 }
 
                 // Load altitude offset
@@ -990,14 +1088,14 @@ namespace IngameScript
                         double y;
                         if (double.TryParse(split[0], out x) && double.TryParse(split[1], out y))
                         {
-                            _wasdDesiredSpeed = new Vector2D(x, y);
+                            _autopilotDesiredSpeed = new Vector2D(x, y);
                             loadedWasdSpeed = true;
                         }
                     }
                 }
                 if (!loadedWasdSpeed)
                 {
-                    _wasdDesiredSpeed = new Vector2D();
+                    _autopilotDesiredSpeed = new Vector2D();
                 }
             }
             else
@@ -1019,13 +1117,12 @@ namespace IngameScript
             state += (_controlling ? 'y' : 'n');
             state += (_landing ? 'y' : 'n');
             state += (_isHangarMode ? 'y' : 'n');
-            state += (_isWasd ? 'y' : 'n');
 
             Me.CustomData = VERSION + '\n'                              // Line 1: version
                 + _blockGroupName + '\n' +                              // Line 2: name of block group
                 state + '\n' +                                          // Line 3: current control state (controlling, landing, hangar)
                 _altitudeOffset + '\n' +                                // Line 4: altitude offset
-                $"{_wasdDesiredSpeed.X:F2} {_wasdDesiredSpeed.Y:F2}\n"; // Line 5: WASD desired speed
+                $"{_autopilotDesiredSpeed.X:F2} {_autopilotDesiredSpeed.Y:F2}\n"; // Line 5: WASD desired speed
         }
 
         void ResetDisplays()
@@ -1064,9 +1161,20 @@ namespace IngameScript
 
         static Vector3 Lerp(Vector3 a, Vector3 b, float t) => a + (b - a) * Clamp(0f, 1f, t);
 
-        new void Echo(object obj)
+        new void Echo(object obj, bool appendToMessage = true)
         {
-            base.Echo(obj != null ? obj.ToString() : "null");
+            string msg = obj != null ? obj.ToString() : "null";
+            base.Echo(msg);
+
+            if (appendToMessage)
+            {
+                if (!_hasEchoed)
+                {
+                    _hasEchoed = true;
+                    _echoMessage = "";
+                }
+                _echoMessage += msg + '\n';
+            }
         }
 
         static string FormatGPS(Vector3 position, string gpsName) =>
@@ -1074,6 +1182,23 @@ namespace IngameScript
 
         static string FormatGPS(Vector3D position, string gpsName) =>
             $"GPS:{gpsName}:{position.X.ToString("F5")}:{position.Y.ToString("F5")}:{position.Z.ToString("F5")}:";
+
+        static Vector3? TryParseGPS(string gps)
+        {
+            string[] split = gps.Split(':');
+            if (split.Length < 5)
+                return null;
+
+            string xStr = split[2];
+            string yStr = split[3];
+            string zStr = split[4];
+
+            float x, y, z;
+            if (float.TryParse(xStr, out x) && float.TryParse(yStr, out y) && float.TryParse(zStr, out z))
+                return new Vector3(x, y, z);
+            else
+                return null;
+        }
 
         //Whip's ApplyGyroOverride Method v9 - 8/19/17
         static void ApplyGyroOverride(double pitch_speed, double yaw_speed, double roll_speed, List<IMyGyro> gyro_list, IMyTerminalBlock reference)
@@ -1406,6 +1531,9 @@ namespace IngameScript
             public Vector2 _Last { get; private set; }
             public Vector2D _InputDuration { get; private set; }
 
+            public bool _IsDoublepressX { get; private set; }
+            public bool _IsDoublepressY { get; private set; }
+
             private Vector2 _LastNonzeroInput { get; set; }
             private Vector2D _LastNonzeroInputTime { get; set; }
             private Vector2D _LastDoublepressTime { get; set; }
@@ -1419,6 +1547,9 @@ namespace IngameScript
                 _Current = current;
 
                 _CurrentYaw = cockpit.MoveIndicator.X;
+
+                _IsDoublepressX = PopDoublePress(0, currentTime);
+                _IsDoublepressY = PopDoublePress(1, currentTime);
             }
 
             public void PostUpdate(double currentTime, double dt)
@@ -1451,7 +1582,7 @@ namespace IngameScript
                 _Last = _Actual;
             }
 
-            public bool PopDoublePress(int component, double currentTime)
+            private bool PopDoublePress(int component, double currentTime)
             {
                 if (component < 0 || component > 1) throw new ArgumentException("Component must be 0 or 1 (x or y)");
 
@@ -1486,7 +1617,7 @@ namespace IngameScript
             private int numberAvgRuntime;
             private double nextAvgRuntimeStart;
 
-            void Update(double ms, double time)
+            public void Update(double ms, double time)
             {
                 // Update average runtime
                 nextAvgRuntime += ms;
@@ -1495,11 +1626,12 @@ namespace IngameScript
                 {
                     avgRuntimeMs = nextAvgRuntime / numberAvgRuntime;
                     nextAvgRuntime = 0.0;
+                    numberAvgRuntime = 0;
                     nextAvgRuntimeStart = time;
                 }
 
                 // Update max runtime
-                if (ms > maxRuntimeMs || (time - maxRuntimeTime) > 4.0)
+                if (ms > maxRuntimeMs || (time - maxRuntimeTime) > 10.0)
                 {
                     maxRuntimeMs = ms;
                     maxRuntimeTime = time;
