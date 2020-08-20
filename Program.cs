@@ -354,16 +354,6 @@ namespace IngameScript
             // Determine radius of sea level
             float sealevelRadius = 60000f; // TODO Configurable
 
-            // Update info
-            _info.cockpit = _cockpit;
-            _info.gravityDown = gravityDown;
-            _info.gravityUp = -gravityDown;
-            _info.planetCenter = planetCenter;
-            _info.sealevelRadius = sealevelRadius;
-            _info.slopeRate = _slopeMeasurer._Slope * horizontalVelocity.Length();
-            _info.time = (float) _totalTimeRan;
-            _info.verticalVelocity = verticalVelocity;
-
             // Determine current altitude
             AltitudeData? altitudeData = _raycastAltitudeProvider.GetAltitude(_slopeMeasurer, _info) ??
                 _elevationAltitudeProvider.GetAltitude(_slopeMeasurer, _info);
@@ -374,6 +364,28 @@ namespace IngameScript
             }
             float altitude = altitudeData.Value.altitude;
             float groundHeight = altitudeData.Value.groundHeight;
+
+            // Update info, to be used by different subsystems
+            _info.angularVelocity = angularVelocity;
+            _info.cockpit = _cockpit;
+            _info.forwardVelocity = forwardVelocity;
+            _info.gravity = gravity;
+            _info.gravityDown = gravityDown;
+            _info.gravityUp = -gravityDown;
+            _info.groundForward = groundForward;
+            _info.groundRight = groundRight;
+            _info.horizontalSpeed = horizontalVelocity.Length();
+            _info.planetCenter = planetCenter;
+            _info.sealevelRadius = sealevelRadius;
+            _info.shipForward = shipForward;
+            _info.shipPitch = shipPitch;
+            _info.shipRoll = shipRoll;
+            _info.shipUp = shipUp;
+            _info.sidewaysVelocity = sidewaysVelocity;
+            _info.slopeRate = _slopeMeasurer._Slope * horizontalVelocity.Length();
+            _info.surfaceVelocity = altitudeData.Value.surfaceVelocity;
+            _info.time = (float) _totalTimeRan;
+            _info.verticalVelocity = verticalVelocity;
 
             // TODO: Enable forward scanning
             //DoScanAhead(velocity, gravityDown, altitude);
@@ -416,105 +428,7 @@ namespace IngameScript
 
                 if (true)
                 {
-                    Vector2D maxWasdSpeed = new Vector2D(8.0, 30.0);
-                    Vector2D maxWasdAccel = new Vector2D(4.0, 6.0);
-                    Vector2D wasdDoubletapSpeed = new Vector2D(4.0, 10.0);
-                    double wasdSpeedCutoff = 2.0;
-                    double outOfCockpitCutoff = 2.0;
-
-                    // Update desired speed
-                    // Increase/decrease speed when keys pressed, faster if the key has been held down for at least 0.5s
-                    _wasdDesiredSpeed.X += maxWasdAccel.X * (_input._InputDuration.X > 0.5 ? 1.0 : 0.5) * _input._Current.X * dt;
-                    _wasdDesiredSpeed.Y += maxWasdAccel.Y * (_input._InputDuration.Y > 0.5 ? 1.0 : 0.5) * _input._Current.Y * dt;
-
-                    // Reset speed when a) it is +-2m/s or less, b) pressed key in the opposite direction last tick, and c) not pressing key anymore
-                    if (_input._Last.X != 0 && Math.Sign(_input._Last.X) != Math.Sign(_wasdDesiredSpeed.X) &&
-                            _input._Current.X == 0 && Math.Abs(_wasdDesiredSpeed.X) < wasdSpeedCutoff)
-                        _wasdDesiredSpeed.X = 0.0;
-                    if (_input._Last.Y != 0 && Math.Sign(_input._Last.Y) != Math.Sign(_wasdDesiredSpeed.Y) &&
-                            _input._Current.Y == 0 && Math.Abs(_wasdDesiredSpeed.Y) < wasdSpeedCutoff)
-                        _wasdDesiredSpeed.Y = 0.0;
-
-                    // Double tapping gives either a speed boost if done in the same direction as current velocity, or resets speed for the opposite direction
-                    if (_input.PopDoublePress(0, _totalTimeRan))
-                    {
-                        _wasdDesiredSpeed.X = (Math.Sign(_input._Actual.X) == Math.Sign(_wasdDesiredSpeed.X)) ?
-                            wasdDoubletapSpeed.X * Math.Sign(_input._Actual.X) :
-                            0.0;
-                    }
-                    if (_input.PopDoublePress(1, _totalTimeRan))
-                    {
-                        _wasdDesiredSpeed.Y = (Math.Sign(_input._Actual.Y) == Math.Sign(_wasdDesiredSpeed.Y)) ?
-                            wasdDoubletapSpeed.Y * Math.Sign(_input._Actual.Y) :
-                            0.0;
-                    }
-
-                    // Cap desired speed to 6m/s horizontal, 10m/s forward
-                    if (Math.Abs(_wasdDesiredSpeed.X) > maxWasdSpeed.X)
-                        _wasdDesiredSpeed.X = maxWasdSpeed.X * Math.Sign(_wasdDesiredSpeed.X);
-                    if (Math.Abs(_wasdDesiredSpeed.Y) > maxWasdSpeed.Y)
-                        _wasdDesiredSpeed.Y = maxWasdSpeed.Y * Math.Sign(_wasdDesiredSpeed.Y);
-
-                    // Stop moving if player is out of cockpit and moving too fast
-                    if (!_cockpit.IsUnderControl && (Math.Abs(_wasdDesiredSpeed.X) > outOfCockpitCutoff || Math.Abs(_wasdDesiredSpeed.Y) > outOfCockpitCutoff))
-                    {
-                        _wasdDesiredSpeed.X = _wasdDesiredSpeed.Y = 0;
-                    }
-
-                    double dvs = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundRight) + _wasdDesiredSpeed.X - sidewaysVelocity;
-                    double dvf = Vector3.Dot(altitudeData.Value.surfaceVelocity, groundForward) + _wasdDesiredSpeed.Y - forwardVelocity;
-
-                    double desiredRoll = 0.0;
-                    double desiredPitch = 0.0;
-                    double maxDesiredAngle = 20.0;
-
-                    if (Math.Abs(dvs) > 0.005)
-                    {
-                        double r1 = 10.0;
-                        double t1 = 2.0;
-                        double g = gravity;
-
-                        desiredRoll = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvs) / (g * t1))) * 180.0 / Math.PI;
-                        desiredRoll *= Math.Sign(dvs);
-                    }
-                    if (Math.Abs(dvf) > 0.005||true)
-                    {
-                        double r1 = 10.0;
-                        double t1 = 1.5;
-                        double g = gravity;
-
-                        desiredPitch = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvf) / (g * t1))) * 180.0 / Math.PI;
-                        desiredPitch *= -Math.Sign(dvf);
-                        _temporaryMessage = new LcdMessage((desiredPitch - shipPitch).ToString("F3"), (float) _totalTimeRan, 10000);
-                    }
-
-                    desiredRoll = Clamp(-maxDesiredAngle, maxDesiredAngle, desiredRoll);
-                    desiredPitch = Clamp(-maxDesiredAngle, maxDesiredAngle, desiredPitch);
-
-                    double rs = 20.0;
-                    double ps = 20.0;
-
-                    if (Math.Abs(dvs) < 0.005 && Math.Abs(shipRoll) < 0.5)
-                    {
-                        desiredRoll = 0.0;
-                        rs = 2.0;
-                    }
-                    if (Math.Abs(dvf) < 0.005 && Math.Abs(shipPitch) < 0.5)
-                    {
-                        desiredPitch = 0.0;
-                        ps = 2.0;
-                    }
-
-                    double allowedYawSpeed = Lerp(10f, 2f, horizontalVelocity.Length() / 5f + Math.Abs(shipPitch / 20f) + Math.Abs(shipRoll / 20f));
-
-                    double baseRollSpeed = Math.Sign(desiredRoll - shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - shipRoll) / rs));
-                    double basePitchSpeed = Math.Sign(desiredPitch - shipPitch) * Math.Min(2.0, Math.Abs((desiredPitch - shipPitch) / ps));
-                    double baseYawSpeed = _input._CurrentYaw * allowedYawSpeed - -angularVelocity.Y;
-
-                    Vector3 transformedSpeeds = TransformEulerDeltas(new Vector3(shipPitch, 0f, shipRoll),
-                        new Vector3(basePitchSpeed, baseYawSpeed, baseRollSpeed),
-                        shipForward, shipUp, groundForward, -gravityDown);
-                    ApplyGyroOverride(transformedSpeeds.X, transformedSpeeds.Y, transformedSpeeds.Z, _gyros, _cockpit);
+                    ApplyWasdControls(dt);
                 }
                 else
                 {
@@ -613,7 +527,110 @@ namespace IngameScript
                 else display.BackgroundColor = Color.Black;
             }
         }
-        
+
+        void ApplyWasdControls(double dt)
+        {
+            Vector2D maxWasdSpeed = new Vector2D(8.0, 30.0);
+            Vector2D maxWasdAccel = new Vector2D(4.0, 6.0);
+            Vector2D wasdDoubletapSpeed = new Vector2D(4.0, 10.0);
+            double wasdSpeedCutoff = 2.0;
+            double outOfCockpitCutoff = 2.0;
+
+            // Update desired speed
+            // Increase/decrease speed when keys pressed, faster if the key has been held down for at least 0.5s
+            _wasdDesiredSpeed.X += maxWasdAccel.X * (_input._InputDuration.X > 0.5 ? 1.0 : 0.5) * _input._Current.X * dt;
+            _wasdDesiredSpeed.Y += maxWasdAccel.Y * (_input._InputDuration.Y > 0.5 ? 1.0 : 0.5) * _input._Current.Y * dt;
+
+            // Reset speed when a) it is +-2m/s or less, b) pressed key in the opposite direction last tick, and c) not pressing key anymore
+            if (_input._Last.X != 0 && Math.Sign(_input._Last.X) != Math.Sign(_wasdDesiredSpeed.X) &&
+                    _input._Current.X == 0 && Math.Abs(_wasdDesiredSpeed.X) < wasdSpeedCutoff)
+                _wasdDesiredSpeed.X = 0.0;
+            if (_input._Last.Y != 0 && Math.Sign(_input._Last.Y) != Math.Sign(_wasdDesiredSpeed.Y) &&
+                    _input._Current.Y == 0 && Math.Abs(_wasdDesiredSpeed.Y) < wasdSpeedCutoff)
+                _wasdDesiredSpeed.Y = 0.0;
+
+            // Double tapping gives either a speed boost if done in the same direction as current velocity, or resets speed for the opposite direction
+            if (_input.PopDoublePress(0, _totalTimeRan))
+            {
+                _wasdDesiredSpeed.X = (Math.Sign(_input._Actual.X) == Math.Sign(_wasdDesiredSpeed.X)) ?
+                    wasdDoubletapSpeed.X * Math.Sign(_input._Actual.X) :
+                    0.0;
+            }
+            if (_input.PopDoublePress(1, _totalTimeRan))
+            {
+                _wasdDesiredSpeed.Y = (Math.Sign(_input._Actual.Y) == Math.Sign(_wasdDesiredSpeed.Y)) ?
+                    wasdDoubletapSpeed.Y * Math.Sign(_input._Actual.Y) :
+                    0.0;
+            }
+
+            // Cap desired speed to 6m/s horizontal, 10m/s forward
+            if (Math.Abs(_wasdDesiredSpeed.X) > maxWasdSpeed.X)
+                _wasdDesiredSpeed.X = maxWasdSpeed.X * Math.Sign(_wasdDesiredSpeed.X);
+            if (Math.Abs(_wasdDesiredSpeed.Y) > maxWasdSpeed.Y)
+                _wasdDesiredSpeed.Y = maxWasdSpeed.Y * Math.Sign(_wasdDesiredSpeed.Y);
+
+            // Stop moving if player is out of cockpit and moving too fast
+            if (!_cockpit.IsUnderControl && (Math.Abs(_wasdDesiredSpeed.X) > outOfCockpitCutoff || Math.Abs(_wasdDesiredSpeed.Y) > outOfCockpitCutoff))
+            {
+                _wasdDesiredSpeed.X = _wasdDesiredSpeed.Y = 0;
+            }
+
+            double dvs = Vector3.Dot(_info.surfaceVelocity, _info.groundRight) + _wasdDesiredSpeed.X - _info.sidewaysVelocity;
+            double dvf = Vector3.Dot(_info.surfaceVelocity, _info.groundForward) + _wasdDesiredSpeed.Y - _info.forwardVelocity;
+
+            double desiredRoll = 0.0;
+            double desiredPitch = 0.0;
+            double maxDesiredAngle = 20.0;
+
+            if (Math.Abs(dvs) > 0.005)
+            {
+                double r1 = 10.0;
+                double t1 = 2.0;
+                double g = _info.gravity;
+
+                desiredRoll = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvs) / (g * t1))) * 180.0 / Math.PI;
+                desiredRoll *= Math.Sign(dvs);
+            }
+            if (Math.Abs(dvf) > 0.005 || true)
+            {
+                double r1 = 10.0;
+                double t1 = 1.5;
+                double g = _info.gravity;
+
+                desiredPitch = Math.Acos(Math.Exp((r1 * Math.PI / 180.0) * -Math.Abs(dvf) / (g * t1))) * 180.0 / Math.PI;
+                desiredPitch *= -Math.Sign(dvf);
+                _temporaryMessage = new LcdMessage((desiredPitch - _info.shipPitch).ToString("F3"), (float) _totalTimeRan, 10000);
+            }
+
+            desiredRoll = Clamp(-maxDesiredAngle, maxDesiredAngle, desiredRoll);
+            desiredPitch = Clamp(-maxDesiredAngle, maxDesiredAngle, desiredPitch);
+
+            double rs = 20.0;
+            double ps = 20.0;
+
+            if (Math.Abs(dvs) < 0.005 && Math.Abs(_info.shipRoll) < 0.5)
+            {
+                desiredRoll = 0.0;
+                rs = 2.0;
+            }
+            if (Math.Abs(dvf) < 0.005 && Math.Abs(_info.shipPitch) < 0.5)
+            {
+                desiredPitch = 0.0;
+                ps = 2.0;
+            }
+
+            double allowedYawSpeed = Lerp(10f, 2f, _info.horizontalSpeed / 5f + Math.Abs(_info.shipPitch / 20f) + Math.Abs(_info.shipRoll / 20f));
+
+            double baseRollSpeed = Math.Sign(desiredRoll - _info.shipRoll) * Math.Min(1.0, Math.Abs((desiredRoll - _info.shipRoll) / rs));
+            double basePitchSpeed = Math.Sign(desiredPitch - _info.shipPitch) * Math.Min(2.0, Math.Abs((desiredPitch - _info.shipPitch) / ps));
+            double baseYawSpeed = _input._CurrentYaw * allowedYawSpeed - -_info.angularVelocity.Y;
+
+            Vector3 transformedSpeeds = TransformEulerDeltas(new Vector3(_info.shipPitch, 0f, _info.shipRoll),
+                new Vector3(basePitchSpeed, baseYawSpeed, baseRollSpeed),
+                _info.shipForward, _info.shipUp, _info.groundForward, _info.gravityUp);
+            ApplyGyroOverride(transformedSpeeds.X, transformedSpeeds.Y, transformedSpeeds.Z, _gyros, _cockpit);
+        }
+
         // Transforms desired euler angles to change so that they are relative to planet axes rather than local axes.
         // For example, normally applying a yaw rotation while pitch is non-zero will cause a change in the ship's roll.
         // This adjusts the euler angles so this does not happen.
@@ -1139,7 +1156,24 @@ namespace IngameScript
             public Vector3 gravityDown;
             public Vector3 gravityUp;
             public Vector3 planetCenter;
+            public float gravity;
+
             public float verticalVelocity;
+            public float forwardVelocity;
+            public float sidewaysVelocity;
+            public float horizontalSpeed;
+
+            public Vector3 surfaceVelocity;
+            public Vector3 angularVelocity;
+
+            public Vector3 shipUp;
+            public Vector3 shipForward;
+            public Vector3 groundForward;
+            public Vector3 groundRight;
+
+            public float shipPitch;
+            public float shipRoll;
+
             public float time;
             // Distance from planet center to sea level
             public float sealevelRadius;
