@@ -614,6 +614,56 @@ namespace IngameScript
             double desiredPitch = 0.0;
             double maxDesiredAngle = 20.0;
 
+            /**
+             * The following code determines the ideal angle given the current velocity, so that if the ship follows this rotation
+             * over time it will be brought to a complete halt (without wobbling).
+             * In practice, however, the ship can't turn instantly, and the mathematical model does not account for that, so it will
+             * have a bit of inaccuracy/wobbling as it moves.
+             * Also, the model doesn't account for changes in thrust power due to hills/slopes, but this is ok because WASD is designed
+             * to mostly be used in bases anyways.
+             * 
+             * Derivation of the formula:   (Done by maaaxaltan, you can use this too but please credit me first)
+             * ==========================
+             * We will first describe a hypothetical scenario where the ship undergoes a linear rotation along one axis (e.g. either pitch
+             * or roll). Then, we will use the ship's rotation to predict how it accelerates and its actual velocity as time goes on.
+             * We can finally use this scenario in the "real" Space Engineers by mapping the ship's current velocity to the model rotation.
+             * 
+             * Say the ship starts at time t=0 and rotation r(t)=r1, and over time interval [0,t1] seconds, rotates linearly from a rotation
+             * of r1 to 0 radians. (Note: "rotation" can refer to either roll or pitch)
+             * 
+             * Thus we have the formula for the ship's current rotation, given the time in seconds:
+             *   r(t) = r1 - (r1/t1) * t
+             * 
+             * Next we will determine the current acceleration of the ship given its rotation.
+             * The total acceleration needed to keep the ship from falling can be calculated with "g / cos(theta)", m and g are mass and
+             * gravitation acceleration, respectively, and theta is the ship's current angle between the ground plane (i.e. 0 degrees when
+             * level with the ground, 90 degrees when pointing straight up/down).
+             * However, what we really want is to determine its acceleration laterally. In this case the acceleration laterally can be determined
+             * by multiplying the acceleration by the sine of the angle, so the lateral acceleration can be computed using "g * sin(theta) / cos(theta)".
+             * 
+             * Simplifying and using r(t) as the rotation, we have the ship's acceleration:
+             *   a(t) = g * tan(r(t))
+             * 
+             * Now we will integrate its acceleration to determine its velocity.
+             * Due to how we are using this model, we only need to solve for velocity in terms of rotation, not in terms of time, which makes the
+             * integration slightly easier.
+             * 
+             * Velocity is simply the integral of acceleration over time, so we can say v(t) = fnint(a(t), t, 0, t)
+             * To save space, all the steps of solving the integral are not written here. But the final result of the integration is
+             *   v(t) = g*t1/r1 * ln|cos(r(t))|.
+             * 
+             * If the ship matches its rotation exactly with r(t) over time, and keeps the acceleration imparted by the thrusters exactly at
+             * "g / cos(r(t))", then we can expect it to follow the velocity curve given by v(t).
+             * 
+             * In practice, we want the ship to get its rotation from its velocity, not the other way around. Having it follow this hypothetical
+             * scenario exactly would not work because its velocity would get slightly off from things like slopes or turning slightly too slowly.
+             * Therefore, we will solve for desired rotation in terms of v(t) and avoid having the desired rotation be based off the previous definition
+             * of r(t) above.
+             * 
+             * Solving v(t) for rotation, we get:
+             *   r(t) = acos(exp( (r1*v(t))/(g*t1) ))
+             * which is the formula used by the code.
+             */
             if (Math.Abs(dvs) > 0.01)
             {
                 double r1 = 10.0;
